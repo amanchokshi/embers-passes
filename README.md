@@ -9,16 +9,11 @@ A catalog of calibrated MWA satellite beam measurements at 137 MHz from:
 
 Each entry is a calibrated satellite pass tracing a 1D slice through the MWA beam.
 
-## Data size
-
-This repository contains ~2.3 GB of HDF5 data products. If you only need the
-code, you can clone without data:
-
-```bash
-git clone --filter=blob:none https://github.com/amanchokshi/embers-passes.git
-```
-
 ## Installation
+
+> [!CAUTION]
+> This repository contains ~2.3 GB of satellite pass data.
+> A full clone will download ~1.4 GB and expand to ~3–4 GB on disk.
 
 ```bash
 git clone https://github.com/amanchokshi/embers-passes.git
