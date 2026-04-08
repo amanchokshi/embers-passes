@@ -48,6 +48,18 @@ dev = [
     "mwa-hyperbeam>=0.10.4",
 ]
 
+[project.optional-dependencies]
+dev = [
+    "cmasher>=1.9.2",
+    "healpy>=1.19.0",
+    "ipympl>=0.10.0",
+    "ipython>=9.12.0",
+    "jupyter>=1.1.1",
+    "jupyterlab>=4.5.6",
+    "matplotlib>=3.10.0",
+    "mwa-hyperbeam>=0.10.4",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/embers_passes"]
 

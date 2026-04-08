@@ -38,7 +38,7 @@ Includes plotting tools, beam modelling, notebooks, and healpix utilities:
 git clone https://github.com/amanchokshi/embers-passes.git
 cd embers-passes
 
-pip install .[dev]
+pip install ".[dev]"
 ```
 
 ## Accessing the data
