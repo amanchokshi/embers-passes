@@ -46,7 +46,6 @@ eval_spline_gradient_batch    – vmap surface gradient
 
 from __future__ import annotations
 import dataclasses
-from typing import Tuple
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -195,27 +194,6 @@ def _bspline_basis_active(t: jnp.ndarray, p: int, x) -> tuple:
     return b, i_star
 
 
-def _bspline_basis_deriv_vector(t: jnp.ndarray, p: int, x) -> jnp.ndarray:
-    """First derivative d/dx B_{i,p}(x), shape (m-p-1,).
-
-    Uses: d/dx B_{i,p} = p*[B_{i,p-1}/(t_{i+p}-t_i) - B_{i+1,p-1}/(t_{i+p+1}-t_{i+1})]
-    This calls _bspline_basis_vector at degree p-1, so is smooth w.r.t. x
-    wherever the degree-(p-1) basis is smooth.
-    """
-    m  = t.shape[0]
-    n  = m - p - 1
-    dt = t.dtype
-
-    b_pm1 = _bspline_basis_vector(t, p - 1, x)   # (n+1,)
-
-    ti   = t[:n];              tip  = t[p : p + n]
-    ti1  = t[1 : 1 + n];      tip1 = t[p + 1 : p + 1 + n]
-
-    dl = tip  - ti;   al = jnp.where(dl != 0, p / dl, jnp.zeros(n, dt))
-    dr = tip1 - ti1;  ar = jnp.where(dr != 0, p / dr, jnp.zeros(n, dt))
-    return al * b_pm1[:n] - ar * b_pm1[1 : n + 1]
-
-
 # ---------------------------------------------------------------------------
 # De Boor algorithm — smooth w.r.t. x for jax.grad
 # ---------------------------------------------------------------------------
@@ -333,76 +311,6 @@ def eval_spline_batch(
 
 
 # ---------------------------------------------------------------------------
-# Analytic surface gradient (recommended for gradient computation)
-# ---------------------------------------------------------------------------
-
-def eval_spline_gradient_3d(spl: SphericalSpline, theta, phi) -> jnp.ndarray:
-    """Cartesian surface gradient of the spline at (theta, phi).
-
-    Uses the analytic B-spline derivative formula (degree p-1 basis), which
-    is smooth wherever the degree-(p-1) basis is smooth (i.e., p-2 times
-    continuously differentiable at knots).
-
-    The intrinsic gradient on the unit sphere is:
-        grad_S f  =  df/dθ · ê_θ  +  (df/dφ / sin θ) · ê_φ
-
-    Orthonormal tangent frame:
-        ê_θ = ( cos θ cos φ,  cos θ sin φ,  −sin θ )
-        ê_φ = ( −sin φ,        cos φ,         0     )
-
-    The 1/sin θ factor is clamped (≥ 1e-8) for pole stability.
-
-    Returns
-    -------
-    grad : (3,) Cartesian surface gradient (⊥ to the position vector)
-    """
-    b_t  = _bspline_basis_vector(spl.t_theta, spl.p, theta)
-    b_p  = _bspline_basis_vector(spl.t_phi,   spl.q, phi)
-    db_t = _bspline_basis_deriv_vector(spl.t_theta, spl.p, theta)
-    db_p = _bspline_basis_deriv_vector(spl.t_phi,   spl.q, phi)
-
-    df_dtheta = jnp.dot(db_t, spl.c @ b_p)
-    df_dphi   = jnp.dot(b_t,  spl.c @ db_p)
-
-    inv_sin = 1.0 / jnp.maximum(jnp.abs(jnp.sin(theta)), 1e-8)
-    cos_t   = jnp.cos(theta); sin_t = jnp.sin(theta)
-    cos_p   = jnp.cos(phi);   sin_p = jnp.sin(phi)
-    zero    = jnp.zeros_like(cos_t)
-
-    e_theta = jnp.stack([ cos_t * cos_p,  cos_t * sin_p, -sin_t])
-    e_phi   = jnp.stack([-sin_p,           cos_p,          zero ])
-
-    return df_dtheta * e_theta + (df_dphi * inv_sin) * e_phi
-
-
-def eval_spline_gradient_batch(
-    spl: SphericalSpline, theta: jnp.ndarray, phi: jnp.ndarray
-) -> jnp.ndarray:
-    """Analytic surface gradient at N points → (N, 3) array."""
-    return jax.vmap(lambda th, ph: eval_spline_gradient_3d(spl, th, ph))(theta, phi)
-
-
-# ---------------------------------------------------------------------------
-# Autodiff partials via de Boor (for validation / NumPyro log-prob grads)
-# ---------------------------------------------------------------------------
-
-def eval_spline_gradient_autodiff(
-    spl: SphericalSpline, theta, phi
-) -> Tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """(value, df/dtheta, df/dphi) via jax.grad through eval_spline_deboor.
-
-    Returns
-    -------
-    value, df_dtheta, df_dphi : three scalars
-    """
-    f = lambda th, ph: eval_spline_deboor(spl, th, ph)
-    val      = f(theta, phi)
-    df_dth   = jax.grad(f, 0)(theta, phi)
-    df_dph   = jax.grad(f, 1)(theta, phi)
-    return val, df_dth, df_dph
-
-
-# ---------------------------------------------------------------------------
 # Demo / smoke test
 # ---------------------------------------------------------------------------
 
@@ -440,43 +348,13 @@ if __name__ == "__main__":
         print(f"  [{i}]  {v_basis[i]:.8f}  {v_deboor[i]:.8f}  "
               f"{v_scipy[i]:.8f}  {v_true[i]:.8f}  Δ={float(v_basis[i]-v_scipy[i]):.1e}")
 
-    # ---- 2. Gradient accuracy ----
-    th0, ph0 = jnp.float64(0.6), jnp.float64(1.3)
-
-    # Analytic formula
-    g3d = eval_spline_gradient_3d(spl, th0, ph0)
-
-    # jax.grad through de Boor
-    val, dth_ad, dph_ad = eval_spline_gradient_autodiff(spl, th0, ph0)
-
-    # True partials for sin²θ·cos(2φ)
-    th0n, ph0n = float(th0), float(ph0)
-    true_dth =  2*np.sin(th0n)*np.cos(th0n)*np.cos(2*ph0n)
-    true_dph = -2*np.sin(th0n)**2*np.sin(2*ph0n)
-
-    print(f"\nPartials at (θ={th0n:.2f}, φ={ph0n:.2f}):")
-    print(f"  df/dθ → jax.grad: {float(dth_ad):.8f}  true: {true_dth:.8f}"
-          f"  Δ={float(dth_ad)-true_dth:.1e}")
-    print(f"  df/dφ → jax.grad: {float(dph_ad):.8f}  true: {true_dph:.8f}"
-          f"  Δ={float(dph_ad)-true_dph:.1e}")
-
-    # Tangency check: surface gradient ⊥ outward normal
-    n_hat = jnp.array([jnp.sin(th0)*jnp.cos(ph0),
-                        jnp.sin(th0)*jnp.sin(ph0),
-                        jnp.cos(th0)])
-    print(f"\n  3D gradient: {np.array(g3d).round(7)}")
-    print(f"  ‖grad‖ = {float(jnp.linalg.norm(g3d)):.7f}")
-    print(f"  grad·n̂ (tangency, ≈0): {float(g3d @ n_hat):.2e}")
-
     # ---- 3. jit / vmap ----
     jit_vals = jax.jit(eval_spline_batch)(spl, th_test, ph_test)
     jit_debo = jax.jit(eval_spline_deboor_batch)(spl, th_test, ph_test)
-    jit_grad = jax.jit(eval_spline_gradient_batch)(spl, th_test, ph_test)
-    jit_vals.block_until_ready(); jit_grad.block_until_ready(); jit_debo.block_until_ready()
+    jit_vals.block_until_ready(); jit_debo.block_until_ready()
     print("\njit + vmap: OK")
     print(f"  eval_spline_batch          → {jit_vals.shape}")
     print(f"  eval_spline_deboor_batch   → {jit_debo.shape}")
-    print(f"  eval_spline_gradient_batch → {jit_grad.shape}")
 
     # ---- 4. Higher-order differentiability (HMC needs this) ----
     jac = jax.jit(
@@ -488,14 +366,6 @@ if __name__ == "__main__":
         jax.hessian(lambda th: eval_spline_deboor(spl, th, ph_test[0]))
     )(th_test[0])
     print(f"jax.hessian (scalar→scalar): {float(h):.7f}  OK")
-
-    # ---- 5. Gradient of analytic gradient (2nd order) ----
-    grad_of_grad = jax.jit(
-        jax.jacobian(lambda th: eval_spline_gradient_batch(spl, th, ph_test))
-    )(th_test)
-    print(f"jax.jacobian of gradient_batch {grad_of_grad.shape}: OK")
-
-    print("\n✓ All checks passed")
 
 
 # ===========================================================================
