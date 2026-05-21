@@ -28,7 +28,10 @@ classifiers = [
 
 dependencies = [
     "h5py",
+    "jax>=0.10.1",
     "numpy",
+    "numpyro>=0.21.0",
+    "scipy>=1.17.1",
 ]
 
 [project.urls]
