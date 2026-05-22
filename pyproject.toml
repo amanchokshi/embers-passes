@@ -27,6 +27,7 @@ classifiers = [
 ]
 
 dependencies = [
+    "h5netcdf",
     "h5py",
     "jax",
     "numpy",
