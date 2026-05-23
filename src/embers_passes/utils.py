@@ -52,6 +52,9 @@ def write_configs(
         num_keys:    how many random keys to generate per (tile, pol) pair
         outdir:      directory to write config files into
     """
+    
+    JAX_KEY_MAX = 2**32 - 1
+
     if tiles is None:
         # All the tiles in the rf0 directory, listed as ints
         tiles = list(range(6, 11)) + [12] + list(range(29, 37))
@@ -59,18 +62,15 @@ def write_configs(
     tiles = [f"{t:02d}" if isinstance(t, int) else t for t in tiles]
     pols = pols if pols is not None else ["XX", "YY"]
 
-    num_keys = len(tiles) * len(pols)
-    
-    JAX_KEY_MAX = 2**32 - 1
-    keys = [random.randint(0, JAX_KEY_MAX) for _ in range(num_keys)]
-
-    for (tile, pol), key in zip(product(tiles, pols), keys):
-        config = {
-            **base_config,
-            "tile": tile,
-            "pol": pol,
-            "key": key,
-        }
-        filename = f"{outdir}/config_tile{tile}_{pol}_key{key}.yaml"
-        with open(filename, "w") as f:
-            yaml.dump(config, f, default_flow_style=False)
+    for tile in tiles:
+        for pol in pols:
+            key = random.randint(0, JAX_KEY_MAX) 
+            config = {
+                **base_config,
+                "tile": tile,
+                "pol": pol,
+                "key": key,
+            }
+            filename = f"{outdir}/config_tile{tile}_{pol}_key{key}.yaml"
+            with open(filename, "w") as f:
+                yaml.dump(config, f, default_flow_style=False)
