@@ -1,0 +1,15 @@
+# === Required ===
+mwa_beamfile: /path/to/beamfile
+outdir: /path/to/output
+
+# === Optional (defaults shown) ===
+pol: XX
+tile: "08"        # Leading zero required for single digits
+rf_num: 0
+plotting: false
+num_pass: 1000
+ndevice: 4
+key: 338422580
+num_warmup: 1000
+num_sample: 2000
+mix_model: false
