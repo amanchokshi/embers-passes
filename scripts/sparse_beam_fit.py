@@ -1,5 +1,5 @@
 from pathlib import Path
-from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid
+from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid, load_config
 
 import numpy as np
 
@@ -121,83 +121,8 @@ def plot_pass_ratio(outfile, az_rad, za_rad, res):
 
 if __name__ == "__main__":
 
-    import argparse
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--mwa-beamfile",
-        type=str,
-        dest="mwa_beamfile",
-        required=True
-    )
-    parser.add_argument(
-        "--pol",
-        type=str,
-        required=False,
-        default="XX",
-    )
-    parser.add_argument(
-        "--tile",
-        default="08",
-        type=str,
-        help="Which tile to read in; single digits must have leading 0"
-    )
-    parser.add_argument(
-        "--rf-num",
-        dest="rf_num",
-        required=False,
-        default=0
-    )
-    parser.add_argument(
-        "--outdir",
-        required=True,
-        type=str
-    )
-    parser.add_argument(
-        "--plotting",
-        action="store_true",
-        required=False
-    )
-    parser.add_argument(
-        "--num-pass",
-        dest="num_pass",
-        required=False,
-        type=int,
-        default=1000
-    )
-    parser.add_argument(
-        "--ndevice",
-        type=int,
-        required=False,
-        default=4
-    )
-    parser.add_argument(
-        "--key",
-        type=int,
-        default=338422580,
-        required=False
-    )
-    parser.add_argument(
-        "--num-warmup",
-        type=int,
-        default=1000,
-        required=False,
-        dest="num_warmup"
-    )
-    parser.add_argument(
-        "--num-sample",
-        type=int,
-        required=False,
-        default=2000,
-        dest="num_sample"
-    )
-    parser.add_argument(
-        "--mix-model",
-        dest="mix_model",
-        action="store_true",
-        required=False
-    )
-    args = parser.parse_args()
+    import sys
+    args = load_config(sys.argv[1])
     
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
@@ -231,7 +156,7 @@ if __name__ == "__main__":
     assert args.pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
     pol_ind = pol_ind_dict[args.pol]
 
-    tag = "rf{args.rf_num}_S{args.tile}_{args.pol}"
+    tag = f"rf{args.rf_num}_S{args.tile}_{args.pol}"
 
     path = Path(f"../passes/rf{args.rf_num}/S{args.tile}{args.pol}_rf{args.rf_num}{args.pol}_passes.h5")
     pf = PassFile(path)
