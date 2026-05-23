@@ -1,6 +1,7 @@
 import yaml
 import argparse
 import random
+from itertools import product
 
 def load_config(config_path: str) -> argparse.Namespace:
     """
@@ -63,15 +64,13 @@ def write_configs(
     JAX_KEY_MAX = 2**32 - 1
     keys = [random.randint(0, JAX_KEY_MAX) for _ in range(num_keys)]
 
-    for tile in tiles:
-        for pol in pols:
-            for key in keys:
-                config = {
-                    **base_config,
-                    "tile": tile,
-                    "pol": pol,
-                    "key": key,
-                }
-                filename = f"{outdir}/config_tile{tile}_{pol}_key{key}.yaml"
-                with open(filename, "w") as f:
-                    yaml.dump(config, f, default_flow_style=False)
+    for (tile, pol), key in zip(product(tiles, pols), keys):
+        config = {
+            **base_config,
+            "tile": tile,
+            "pol": pol,
+            "key": key,
+        }
+        filename = f"{outdir}/config_tile{tile}_{pol}_key{key}.yaml"
+        with open(filename, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
