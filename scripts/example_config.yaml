@@ -1,6 +1,7 @@
 # === Required ===
 mwa_beamfile: /path/to/beamfile
 outdir: /path/to/output
+indir: /path/to/input
 
 # === Optional (defaults shown) ===
 pol: XX

@@ -158,7 +158,7 @@ if __name__ == "__main__":
 
     tag = f"rf{args.rf_num}_S{args.tile}_{args.pol}"
 
-    path = Path(f"../passes/rf{args.rf_num}/S{args.tile}{args.pol}_rf{args.rf_num}{args.pol}_passes.h5")
+    path = Path(f"{args.indir}/rf{args.rf_num}/S{args.tile}{args.pol}_rf{args.rf_num}{args.pol}_passes.h5")
     pf = PassFile(path)
     # FIXME: Only 0 pointing
     passes = pf.read_passes(pointing=0)
