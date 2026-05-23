@@ -202,12 +202,10 @@ if __name__ == "__main__":
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
     from numpyro import distributions as dist
-    from numpyro.infer import MCMC, NUTS, init_to_value
+    from numpyro.infer import MCMC, NUTS
     from jax import random
     import jax.numpy as jnp
     import jax
-    from numpyro.infer import SVI, Trace_ELBO
-    from numpyro.infer.autoguide import AutoDelta
 
     import arviz_base as az
     
