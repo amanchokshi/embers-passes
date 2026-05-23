@@ -1,0 +1,377 @@
+from pathlib import Path
+from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid
+
+import numpy as np
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+
+
+from pyuvdata import UVBeam
+
+from scipy.stats import binned_statistic_2d, laplace
+
+import arviz as az
+
+def to_lin(db):
+    """
+    Convert a quantity in decibels to linear units.
+    """
+    return 10**(db/10)
+
+def get_bin_cent(edges):
+    """
+    Utility function for histogram bins that given edges returns bin centers.
+    """
+    return (edges[:-1] + edges[1:]) / 2
+
+def altaz_to_rad(az_deg, alt_deg):
+    """
+    Convert azimuth and altitude in degrees to azimuth and zenith angle in radians.
+    Switches from 'North to East' convention to 'East to North' convention to
+    be consistent with pyuvdata.
+    """
+
+    az_rad = (np.deg2rad(90. - az_deg)) % (2 * np.pi) # Difference in convention b/w data and UVBeam
+    za_rad = np.deg2rad(90. - alt_deg)
+    
+    return az_rad, za_rad
+
+def get_res(az_rad, za_rad, power_db):
+    """
+    Get the residual beam in dB (so the log of the ratio) between the measured
+    power and the simulated model power at the az_deg and alt_deg in question.
+    """
+
+    model_beam = beam.interp(az_array=az_rad, za_array=za_rad)[0][0,pol_ind,0].real # It's a copol power beam
+    model_beam_db = 10 * np.log10(model_beam) 
+    assert np.all(np.isfinite(model_beam_db))
+    
+    res = power_db - model_beam_db
+    return res, model_beam
+
+# Good candidate for some util functions for the module -- should get rid of global variable dependence
+def get_pass_subset(passes, end_ind, start_ind=0, db_cut=3):
+    """
+    Get a pass subset including the altitudes, azimuths, and power measurements in dB.
+
+    Args:
+        passes (list):
+            List of satellite pass records.
+        end_ind (int):
+            The stop index of a slice into passes.
+        start_ind (int):
+            The start index of a slice into passes.
+        db_cut (float):
+            A lower cutoff such that if any power measurements are above it, 
+            the corresponding pass data are excluded from the returned items.
+    Returns:
+        alt_deg (array):
+            Stacked array of altitudes in degrees for selected passes.
+        az_deg (array):
+            Stacked array of azimuths (North to East) in degrees for selected passes.
+        power_db (array):
+            Stacked array of power measurements in dB.
+    """
+    ret = []
+    for attr in ["alt_deg", "az_deg", "power_db"]:
+        ret.append(
+            stack_pass_attr(
+                attr, 
+                passes, 
+                end_ind, 
+                start_ind=start_ind, 
+                db_cut=db_cut
+            )
+        )
+    
+    return ret
+
+def stack_pass_attr(attr, passes, end_ind, start_ind=0, db_cut=3):
+    # Sometimes there are outlier passes with crazy data -- 3 dB cut gets rid of them for at least a couple instances
+    return np.concatenate([getattr(p, attr) for p in passes[start_ind:end_ind] if max(p.power_db) < db_cut])
+
+def plot_pass_subset(alt_deg, az_deg, power_db):
+    az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
+    
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+
+    im = ax.scatter(az_rad, np.sin(za_rad), c=power_db, s=0.1)
+    fig.colorbar(im)
+    
+    return
+
+def plot_pass_ratio(outfile, az_rad, za_rad, res):
+    fig, ax = plt.subplots(subplot_kw={"projection": "polar"})
+
+    im = plt.scatter(
+            az_rad, 
+            np.sin(za_rad), 
+            c=res, 
+            s=0.1, 
+            vmin=-30, 
+            vmax=30, 
+            cmap="coolwarm"
+        )
+    fig.colorbar(im, label="Data/Sim (dB)")
+    ax.grid(False)
+
+    fig.savefig(outfile)
+    plt.close(fig)
+
+if __name__ == "__main__":
+
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--mwa-beamfile",
+        type=str,
+        dest="mwa_beamfile",
+        required=True
+    )
+    parser.add_argument(
+        "--pol",
+        type=str,
+        required=False,
+        default="XX",
+    )
+    parser.add_argument(
+        "--tile",
+        default="08",
+        type=str,
+        help="Which tile to read in; single digits must have leading 0"
+    )
+    parser.add_argument(
+        "--rf-num",
+        dest="rf_num",
+        required=False,
+        default=0
+    )
+    parser.add_argument(
+        "--outdir",
+        required=True,
+        type=str
+    )
+    parser.add_argument(
+        "--plotting",
+        action="store_true",
+        required=False
+    )
+    parser.add_argument(
+        "--num-pass",
+        dest="num_pass",
+        required=False,
+        type=int,
+        default=1000
+    )
+    parser.add_argument(
+        "--ndevice",
+        type=int,
+        required=False,
+        default=4
+    )
+    parser.add_argument(
+        "--key",
+        type=int,
+        default=338422580,
+        required=False
+    )
+    parser.add_argument(
+        "--num-warmup",
+        type=int,
+        default=1000,
+        required=False,
+        dest="num_warmup"
+    )
+    parser.add_argument(
+        "--num-sample",
+        type=int,
+        required=False,
+        default=2000,
+        dest="num_sample"
+    )
+    parser.add_argument(
+        "--mix-model",
+        dest="mix_model",
+        action="store_true",
+        required=False
+    )
+    args = parser.parse_args()
+    
+    import numpyro
+    numpyro.set_host_device_count(args.ndevice)
+    from numpyro import distributions as dist
+    from numpyro.infer import MCMC, NUTS, init_to_value
+    from jax import random
+    import jax.numpy as jnp
+    import jax
+    from numpyro.infer import SVI, Trace_ELBO
+    from numpyro.infer.autoguide import AutoDelta
+
+    import arviz_base as az
+    
+
+    # FIXME: Hardcode -- only zenith
+    delays = np.zeros(16, dtype=int)
+    delays = np.array([delays, delays])
+
+    beam = UVBeam.from_file(
+        args.mwa_beamfile,
+        freq_range=[136e6, 138e6],
+        delays=delays,
+        za_range=(0,90)
+        )
+    beam.peak_normalize()
+    beam.efield_to_power()
+
+
+    pol_ind_dict = {
+        "XX": np.where(beam.polarization_array == -5)[0][0],
+        "YY": np.where(beam.polarization_array == -6)[0][0]
+    }
+    assert args.pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
+    pol_ind = pol_ind_dict[args.pol]
+
+    tag = "rf{args.rf_num}_S{args.tile}_{args.pol}"
+
+    path = Path(f"../passes/rf{args.rf_num}/S{args.tile}{args.pol}_rf{args.rf_num}{args.pol}_passes.h5")
+    pf = PassFile(path)
+    # FIXME: Only 0 pointing
+    passes = pf.read_passes(pointing=0)
+
+    
+    alt_deg, az_deg, power_db = get_pass_subset(passes, args.num_pass)
+    az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
+    res, model_beam = get_res(az_rad, za_rad, power_db)
+
+
+    # Do some Bayesian inference with MCMC (NUTS) on some short chains
+    theta_param = beam.axis2_array[1::10] # avoid the origin by a quarter degree
+    phi_param = beam.axis1_array[::10]
+
+    # ONCE, outside the model:
+    t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
+    Nparam = n_th * n_ph
+
+    class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
+        arg_constraints = {
+            "loc": dist.constraints.real,
+            "scale": dist.constraints.positive,
+            "shape": dist.constraints.positive
+        }
+        support = dist.constraints.real
+        has_rsample = False
+
+        def __init__(self, loc=0., scale=1., shape=1., *, validate_args=None):
+            self.loc = loc
+            self.scale = scale
+            self.shape = shape
+            
+
+            batch_shape = jax.lax.broadcast_shapes(
+                jnp.shape(loc),
+                jnp.shape(scale),
+                jnp.shape(shape),
+            )
+            super(SkewLogistic, self).__init__(batch_shape=batch_shape, validate_args=validate_args)
+
+        def __new__(cls, *args, **kwargs):
+            return object.__new__(cls)
+
+        def log_prob(self, x):
+            centered = (x - self.loc) / self.scale
+            return -jnp.log(self.scale) + jnp.log(self.shape) - centered - (self.shape + 1) * jnp.log1p(jnp.exp(-centered))
+
+        def sample(self, key, sample_shape=()):
+            final_sample_shape = self.batch_shape + sample_shape
+            beta_samp = random.beta(key, self.shape, jnp.ones_like(self.shape), shape=final_sample_shape)
+            centered_samp = jnp.log(beta_samp / (1 - beta_samp))
+            return self.scale * centered_samp + self.loc
+
+    def vanilla_model(
+            za_data, 
+            az_data, 
+            Ndat, 
+            data=None, 
+            add_noise_bias=False,
+            noise_bias=1e-6
+    ):
+        scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
+        scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
+        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
+        with numpyro.plate("Nparam", Nparam):
+            surf_vals = numpyro.sample("surf_vals",
+                                       dist.SoftLaplace(loc=0, scale=scale_vals))
+        spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
+        model_vals = eval_spline_batch(spl, za_data, az_data)
+        if add_noise_bias:
+            model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
+        
+        grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
+        lp1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
+        lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
+        numpyro.factor("grad_pot", lp1 + lp2)
+        
+        
+        with numpyro.plate("Ndat", Ndat):
+            obs = numpyro.sample("obs",
+                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
+                                obs=data)
+            
+    def mixture_model(za_data, az_data, Ndat, data=None):
+        scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
+        skewlog_scale_vals = numpyro.sample("skewlog_scale_vals", dist.Uniform(low=1e-2, high=1e2))
+        skewlog_shape_vals = numpyro.sample("skewlog_shape_vals", dist.Uniform(low=1e-2, high=1e2))
+        scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
+        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
+        mix_weight = numpyro.sample("mix_weight", dist.Beta(11, 1))
+        with numpyro.plate("Nparam", Nparam):
+            surf_vals = numpyro.sample("surf_vals",
+                                    dist.MixtureGeneral(
+                                        dist.Categorical(
+                                            jnp.array([
+                                                mix_weight,
+                                                1 - mix_weight
+                                            ])
+                                        ), 
+                                        [
+                                            dist.SoftLaplace(
+                                            loc=0, scale=scale_vals
+                                        ), 
+                                            SkewLogistic(
+                                                loc=0,
+                                                scale=skewlog_scale_vals,
+                                                shape=skewlog_shape_vals
+                                        )
+                                        ]
+                                        )
+                                    )
+        spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
+        model_vals = eval_spline_batch(spl, za_data, az_data)
+        grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
+        pot1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
+        pot2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
+
+        numpyro.factor("grad_pot", pot1 + pot2)
+        
+        
+        with numpyro.plate("Ndat", Ndat):
+            obs = numpyro.sample("obs",
+                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
+                                obs=data)
+    model = mixture_model if args.mix_model else vanilla_model
+
+    key = random.key(args.key)
+    kernel = NUTS(model)
+    mcmc = MCMC(
+        kernel, 
+        num_warmup=args.num_warmup, 
+        num_samples=args.num_samples, 
+        num_chains=args.ndevice
+    )
+
+    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real)
+    idata = az.from_numpyro(mcmc)
+    idata.to_netcdf(f"{args.outdir}/mcmc_out_{tag}.nc")
+
