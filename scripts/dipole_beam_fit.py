@@ -1,12 +1,16 @@
+from __future__ import annotations
+
 import argparse
+import json
 import os
 import pickle
 from pathlib import Path
+from typing import Any
 
-import pymc as pm
-import numpy as np
 import healpy as hp
 import mwa_hyperbeam
+import numpy as np
+import pymc as pm
 import pytensor.tensor as pt
 from pytensor.graph.op import Op
 from scipy.stats import median_abs_deviation as mad
@@ -17,31 +21,32 @@ from embers_passes import PassFile
 def passes_to_healpix(
     passes,
     nside: int = 32,
-    nest: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Bin pass samples onto a HEALPix map.
 
     Parameters
     ----------
     passes
-        Iterable of pass records. Each record must have ``alt_deg``,
+        Iterable of pass records. Each record must provide ``alt_deg``,
         ``az_deg``, and ``power_db`` attributes.
     nside
-        HEALPix NSIDE parameter. Default is 32.
-    nest
-        Use nested ordering if ``True``. Default is ``False``, corresponding
-        to ring ordering.
+        HEALPix NSIDE parameter controlling angular resolution.
 
     Returns
     -------
     hp_map
-        HEALPix map of mean binned power values. Pixels with no samples are
-        NaN.
+        HEALPix map containing the mean power per pixel in dB.
+        Pixels with no contributing samples are NaN.
     counts
         Number of samples contributing to each pixel.
     mad_map
         HEALPix map of the median absolute deviation of samples in each pixel.
-        Pixels with no samples are NaN.
+        Pixels with no contributing samples are NaN.
+
+    Notes
+    -----
+    The median absolute deviation is scaled using ``scale="normal"`` so that
+    it estimates the equivalent Gaussian standard deviation.
     """
     npix = hp.nside2npix(nside)
 
@@ -61,13 +66,13 @@ def passes_to_healpix(
         theta = np.radians(90.0 - alt_deg[mask])
         phi = np.radians(az_deg[mask])
 
-        pix = hp.ang2pix(nside, theta, phi, nest=nest)
+        pix = hp.ang2pix(nside, theta, phi)
         vals = power_db[mask]
 
         np.add.at(sums, pix, vals)
         np.add.at(counts, pix, 1)
 
-        for pix_i, val_i in zip(pix, vals):
+        for pix_i, val_i in zip(pix, vals, strict=False):
             values_by_pix[pix_i].append(val_i)
 
     hp_map = np.full(npix, np.nan, dtype=float)
@@ -113,41 +118,38 @@ def hyperbeam_healpix(
     beam,
     nside: int = 32,
     freq_hz: float = 137e6,
-    delays=np.zeros(16, dtype=int),
-    amps=np.ones(16),
+    delays: np.ndarray | None = None,
+    amps: np.ndarray | None = None,
     norm_to_zenith: bool = True,
     parallactic: bool = False,
 ) -> np.ndarray:
-    """Evaluate the MWA Hyperbeam model on an above-horizon HEALPix grid.
-    The beam is evaluated for all HEALPix pixels with zenith angle
-    0 <= ZA <= pi/2, corresponding to the upper hemisphere. For a HEALPix
-    map with npix = 12 * nside**2 pixels, this includes npix // 2 pixels.
+    """Evaluate Hyperbeam on an above-horizon HEALPix grid.
 
     Parameters
     ----------
     beam
-        Initialized mwa_hyperbeam.FEEBeam object.
+        Initialized ``mwa_hyperbeam.FEEBeam`` instance.
     nside
-        HEALPix NSIDE parameter defining the angular resolution of the grid.
+        HEALPix NSIDE parameter controlling angular resolution.
     freq_hz
-        Frequency at which to evaluate the beam, in Hz.
+        Frequency at which to evaluate the beam in Hz.
     delays
-        List of 16 beamformer delays, one per dipole. If None, all
-        delays are set to zero.
+        Beamformer delays for the 16 dipoles.
+        If ``None``, all delays are set to zero.
     amps
-        List of 16 dipole amplitudes. If ``None``, all amplitudes are set
-        to unity.
+        Dipole amplitudes for the 16 dipoles.
+        If ``None``, all amplitudes are set to unity.
     norm_to_zenith
-        If True, normalize the beam response to unity at zenith.
+        If ``True``, normalize the beam to unity at zenith.
     parallactic
-        If True, include parallactic-angle rotation.
+        If ``True``, apply parallactic-angle correction.
 
     Returns
     -------
     beam_db
-        Array of shape ``(npix // 2, 2)`` containing the unpolarized beam
-        response in dB for all above-horizon pixels. Column 0 contains the
-        XX polarization and column 1 contains the YY polarization.
+        Array of shape ``(npix // 2, 2)`` containing above-horizon beam
+        responses in dB. Column 0 contains XX polarization and column 1
+        contains YY polarization.
 
     Notes
     -----
@@ -156,6 +158,20 @@ def hyperbeam_healpix(
     ``10 * log10(power)``.
     Any pixels with non-positive power will yield ``-inf``.
     """
+    if delays is None:
+        delays = np.zeros(16, dtype=int)
+
+    if amps is None:
+        amps = np.ones(16, dtype=float)
+
+    delays = np.asarray(delays, dtype=int)
+    amps = np.asarray(amps, dtype=float)
+
+    if delays.shape != (16,):
+        raise ValueError(f"Expected delays with shape (16,), got {delays.shape}.")
+
+    if amps.shape != (16,):
+        raise ValueError(f"Expected amps with shape (16,), got {amps.shape}.")
 
     npix = hp.nside2npix(nside)
     above_horizon = np.arange(npix // 2)
@@ -184,28 +200,80 @@ def hyperbeam_healpix(
 
 
 class HyperbeamLogLike(Op):
+    """PyTensor Op wrapping a Hyperbeam Gaussian log-likelihood.
+
+    Parameters
+    ----------
+    beam_file
+        Path to the Hyperbeam HDF5 beam model file.
+    data_db
+        Observed beam measurements in dB.
+    sigma_db
+        Per-pixel Gaussian uncertainties in dB.
+    fit_mask
+        Boolean mask selecting valid above-horizon pixels.
+    nside
+        HEALPix NSIDE parameter used for beam evaluation.
+    freq_hz
+        Frequency at which the beam is evaluated in Hz.
+    pol
+        Polarization to fit. Must be either ``"xx"`` or ``"yy"``.
+
+    Notes
+    -----
+    This class wraps a black-box likelihood based on the Hyperbeam Rust
+    library. Since Hyperbeam is not differentiable within PyTensor/JAX, the
+    likelihood is evaluated directly inside ``perform``.
+
+    The likelihood assumes independent Gaussian errors
+    """
+
     itypes = [pt.dvector]
     otypes = [pt.dscalar]
 
-    def __init__(self, beam_file, data_db, sigma_db, valid_mask):
+    def __init__(
+        self,
+        beam_file: str | Path,
+        data_db: np.ndarray,
+        sigma_db: np.ndarray,
+        fit_mask: np.ndarray,
+        nside: int = 32,
+        freq_hz: float = 137e6,
+        pol: str = "xx",
+    ) -> None:
         self.beam_file = str(beam_file)
         self.data_db = np.asarray(data_db, dtype=float)
         self.sigma_db = np.asarray(sigma_db, dtype=float)
-        self.valid_mask = np.asarray(valid_mask, dtype=bool)
+        self.fit_mask = np.asarray(fit_mask, dtype=bool)
+        self.nside = int(nside)
+        self.freq_hz = float(freq_hz)
+        self.pol = pol.lower()
 
-    def perform(self, node, inputs, outputs):
+        if self.pol not in {"xx", "yy"}:
+            raise ValueError("pol must be either 'xx' or 'yy'.")
+
+        if self.data_db.shape != self.sigma_db.shape:
+            raise ValueError(
+                "data_db and sigma_db must have the same shape. "
+                f"Got {self.data_db.shape} and {self.sigma_db.shape}."
+            )
+
+    def perform(self, node: Any, inputs: list[np.ndarray], outputs: list[Any]) -> None:
+        """Evaluate the Gaussian log-likelihood."""
         beam = mwa_hyperbeam.FEEBeam(self.beam_file)
 
         (theta,) = inputs
 
-        model_db = hyperbeam_healpix(
+        model = hyperbeam_healpix(
             beam,
-            nside=32,
-            freq_hz=137e6,
+            nside=self.nside,
+            freq_hz=self.freq_hz,
             amps=theta,
-        )[:, 0]
+        )
 
-        model_db = model_db[self.valid_mask]
+        pol_idx = 0 if self.pol == "xx" else 1
+        model_db = model[:, pol_idx][self.fit_mask]
+
         resid = self.data_db - model_db
 
         loglike = -0.5 * np.sum(
@@ -216,7 +284,24 @@ class HyperbeamLogLike(Op):
 
 
 def clean_datatree_for_save(dt):
-    """Drop object-dtype variables from every DataTree node."""
+    """Remove object-dtype variables from a DataTree.
+
+    Parameters
+    ----------
+    dt
+        xarray DataTree containing PyMC/ArviZ inference outputs.
+
+    Returns
+    -------
+    dt_clean
+        Copy of the input DataTree with object-dtype variables removed.
+
+    Notes
+    -----
+    Some PyMC SMC bookkeeping variables such as ``beta`` are stored as object
+    arrays containing Python lists of varying lengths. These cannot be written
+    cleanly to NetCDF or Zarr and are therefore removed.
+    """
     dt = dt.copy()
 
     for path, node in list(dt.subtree_with_keys):
@@ -231,39 +316,174 @@ def clean_datatree_for_save(dt):
     return dt
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
+def save_smc_stats(idata, path: Path) -> None:
+    """Save useful SMC bookkeeping variables separately.
+
+    Parameters
+    ----------
+    idata
+        ArviZ inference data object returned by ``pm.sample_smc``.
+    path
+        Output pickle path.
+
+    Notes
+    -----
+    This preserves useful SMC diagnostics such as:
+    - beta annealing schedules
+    - acceptance rates
+    - log marginal likelihood estimates
+
+    even when they are removed from NetCDF/Zarr outputs.
+    """
+    stats = idata["/sample_stats"].ds
+
+    names = ["beta", "accept_rate", "log_marginal_likelihood"]
+    smc_stats = {name: stats[name].values for name in names if name in stats}
+
+    with open(path, "wb") as f:
+        pickle.dump(smc_stats, f)
+
+
+def build_fit_data(
+    pass_file: str | Path,
+    pointing: int,
+    nside: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Construct above-horizon fitting vectors from pass data.
+
+    Parameters
+    ----------
+    pass_file
+        Path to the EMBERS pass HDF5 file.
+    pointing
+        Beamformer pointing index.
+    nside
+        HEALPix NSIDE parameter.
+
+    Returns
+    -------
+    data_db
+        Above-horizon observed beam values in dB.
+    sigma_db
+        Per-pixel MAD-based uncertainties in dB.
+    fit_mask
+        Boolean mask selecting valid above-horizon pixels.
+    data_map
+        Full-sky HEALPix data map.
+    count_map
+        Number of contributing samples per HEALPix pixel.
+
+    Notes
+    -----
+    Pixels are considered valid if:
+    - the beam value is finite,
+    - the MAD estimate is finite,
+    - the MAD estimate is positive.
+    """
+    pf = PassFile(pass_file)
+    passes = pf.read_passes(pointing=pointing)
+
+    data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
+
+    npix = hp.nside2npix(nside)
+    above_horizon = np.arange(npix // 2)
+
+    data_above = data_map[above_horizon]
+    sigma_above = mad_map[above_horizon]
+
+    fit_mask = np.isfinite(data_above) & np.isfinite(sigma_above) & (sigma_above > 0)
+
+    data_db = np.asarray(data_above[fit_mask], dtype=float)
+    sigma_db = np.asarray(sigma_above[fit_mask], dtype=float)
+    fit_mask = np.asarray(fit_mask, dtype=bool)
+
+    return data_db, sigma_db, fit_mask, data_map, count_map
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed command-line arguments.
+    """
+    parser = argparse.ArgumentParser(
+        description="Fit MWA dipole gains using Hyperbeam and PyMC SMC."
+    )
+
     parser.add_argument("--seed", type=int, required=True)
     parser.add_argument("--draws", type=int, default=2048)
     parser.add_argument("--outdir", type=str, default="data/mcmc")
-    args = parser.parse_args()
+
+    parser.add_argument(
+        "--pass-file",
+        type=str,
+        default="../passes/rf0/S06XX_rf0XX_passes.h5",
+    )
+    parser.add_argument(
+        "--beam-file",
+        type=str,
+        default=os.environ.get("MWA_BEAM_FILE"),
+    )
+    parser.add_argument("--nside", type=int, default=32)
+    parser.add_argument("--freq-hz", type=float, default=137e6)
+    parser.add_argument("--pointing", type=int, default=0)
+    parser.add_argument("--pol", choices=["xx", "yy"], default="xx")
+
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.beam_file is None:
+        raise ValueError(
+            "No beam file supplied. Pass --beam-file or set MWA_BEAM_FILE."
+        )
 
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    pf = PassFile("../passes/rf0/S06XX_rf0XX_passes.h5")
-    passes = pf.read_passes(pointing=0)
-    S06XX_map, count_map, mad_map = passes_to_healpix(passes, nside=32)
+    stem = (
+        f"smc_dirichlet_{args.pol}"
+        f"_seed{args.seed}"
+        f"_draws{args.draws}"
+        f"_nside{args.nside}"
+        f"_freq{args.freq_hz:.0f}"
+    )
 
-    # Restrict to above horizon pix
-    npix = hp.nside2npix(32)
-    above_horizon = np.arange(npix // 2)
+    metadata = {
+        "seed": args.seed,
+        "draws": args.draws,
+        "pass_file": str(Path(args.pass_file).resolve()),
+        "beam_file": str(Path(args.beam_file).resolve()),
+        "nside": args.nside,
+        "freq_hz": args.freq_hz,
+        "pointing": args.pointing,
+        "pol": args.pol,
+        "prior": "theta = 16 * Dirichlet(ones(16))",
+        "chains": 1,
+        "cores": 1,
+    }
 
-    data_db = S06XX_map[above_horizon]
-    sigma_db = mad_map[above_horizon]
+    with open(outdir / f"{stem}_metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
 
-    # Mask bad pix
-    valid_mask = np.isfinite(data_db) & np.isfinite(sigma_db) & (sigma_db > 0)
-
-    data_db = np.asarray(data_db[valid_mask])
-    sigma_db = np.asarray(sigma_db[valid_mask])
-    valid_mask = np.asarray(valid_mask)
+    data_db, sigma_db, fit_mask, _, _ = build_fit_data(
+        pass_file=args.pass_file,
+        pointing=args.pointing,
+        nside=args.nside,
+    )
 
     loglike_op = HyperbeamLogLike(
-        beam_file=os.environ["MWA_BEAM_FILE"],
+        beam_file=args.beam_file,
         data_db=data_db,
         sigma_db=sigma_db,
-        valid_mask=valid_mask,
+        fit_mask=fit_mask,
+        nside=args.nside,
+        freq_hz=args.freq_hz,
+        pol=args.pol,
     )
 
     with pm.Model() as model:
@@ -280,8 +500,14 @@ if __name__ == "__main__":
             progressbar=False,
         )
 
-    with open(outdir / f"smc_dirichlet_seed{args.seed}.pkl", "wb") as f:
+    with open(outdir / f"{stem}.pkl", "wb") as f:
         pickle.dump(idata, f)
 
+    save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
+
     idata_save = clean_datatree_for_save(idata)
-    idata_save.to_netcdf(outdir / f"smc_dirichlet_seed{args.seed}.nc")
+    idata_save.to_netcdf(outdir / f"{stem}.nc")
+
+
+if __name__ == "__main__":
+    main()
