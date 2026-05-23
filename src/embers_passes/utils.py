@@ -35,24 +35,26 @@ def load_config(config_path: str) -> argparse.Namespace:
     return argparse.Namespace(**config)
 
 def write_configs(
-    base_config: dict,
+    base_config_path: str,
     outdir: str,
     tiles: list = None,
     pols: list = None,
 ) -> None:
     """
-    Write one YAML config file per (tile, pol, key) combination.
+    Write one YAML config file per (tile, pol) combination.
     
     Args:
-        base_config: dict of shared settings 
+        base_config_path: path to yaml of shared settings 
             (existing values for tile, pol, key will be overwritten in new yaml)
         tiles:       list of tile strings e.g. ["08", "09", "10"]
         pols:        list of polarisations e.g. ["XX", "YY"]
-        num_keys:    how many random keys to generate per (tile, pol) pair
         outdir:      directory to write config files into
     """
     
     JAX_KEY_MAX = 2**32 - 1
+    
+    with open(base_config_path, "r") as base_config_file:
+        base_config = yaml.safe_load(base_config_file)
 
     if tiles is None:
         # All the tiles in the rf0 directory, listed as ints
@@ -70,6 +72,6 @@ def write_configs(
                 "pol": pol,
                 "key": key,
             }
-            filename = f"{outdir}/config_tile{tile}_{pol}_key{key}.yaml"
+            filename = f"{outdir}/config_tile{tile}_{pol}.yaml"
             with open(filename, "w") as f:
                 yaml.dump(config, f, default_flow_style=False)
