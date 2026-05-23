@@ -1,7 +1,6 @@
 import yaml
 import argparse
 import random
-from itertools import product
 
 def load_config(config_path: str) -> argparse.Namespace:
     """
