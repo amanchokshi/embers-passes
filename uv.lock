@@ -550,9 +550,13 @@ name = "embers-passes"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cmasher" },
     { name = "h5netcdf" },
     { name = "h5py" },
+    { name = "healpy" },
     { name = "jax" },
+    { name = "matplotlib" },
+    { name = "mwa-hyperbeam" },
     { name = "numpy" },
     { name = "numpyro" },
     { name = "pymc" },
@@ -563,61 +567,51 @@ dependencies = [
 
 [package.optional-dependencies]
 dev = [
-    { name = "cmasher" },
-    { name = "healpy" },
     { name = "ipympl" },
     { name = "ipython" },
     { name = "jupyter" },
     { name = "jupyterlab" },
-    { name = "matplotlib" },
-    { name = "mwa-hyperbeam" },
+    { name = "ruff" },
 ]
 
 [package.dev-dependencies]
 dev = [
-    { name = "cmasher" },
-    { name = "healpy" },
     { name = "ipympl" },
     { name = "ipython" },
     { name = "jupyter" },
     { name = "jupyterlab" },
-    { name = "matplotlib" },
-    { name = "mwa-hyperbeam" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
-    { name = "cmasher", marker = "extra == 'dev'", specifier = ">=1.9.2" },
+    { name = "cmasher", specifier = ">=1.9" },
     { name = "h5netcdf" },
     { name = "h5py" },
-    { name = "healpy", marker = "extra == 'dev'", specifier = ">=1.19.0" },
+    { name = "healpy", specifier = ">=1.16" },
     { name = "ipympl", marker = "extra == 'dev'", specifier = ">=0.10.0" },
     { name = "ipython", marker = "extra == 'dev'", specifier = ">=9.12.0" },
     { name = "jax" },
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "jupyterlab", marker = "extra == 'dev'", specifier = ">=4.5.6" },
-    { name = "matplotlib", marker = "extra == 'dev'", specifier = ">=3.10.0" },
-    { name = "mwa-hyperbeam", marker = "extra == 'dev'", specifier = ">=0.10.4" },
-    { name = "numpy" },
-    { name = "numpyro", specifier = ">=0.21.0" },
-    { name = "pymc", specifier = ">=6.0.1" },
+    { name = "matplotlib", specifier = ">=3" },
+    { name = "mwa-hyperbeam", specifier = ">=0.10" },
+    { name = "numpy", specifier = ">=2" },
+    { name = "numpyro", specifier = ">=0.21" },
+    { name = "pymc", specifier = ">=6" },
     { name = "pyyaml" },
-    { name = "scipy", specifier = ">=1.17.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.15.14" },
+    { name = "scipy", specifier = ">=1.17" },
     { name = "zarr", specifier = ">=3" },
 ]
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "cmasher", specifier = ">=1.9.2" },
-    { name = "healpy", specifier = ">=1.19.0" },
     { name = "ipympl", specifier = ">=0.10.0" },
     { name = "ipython", specifier = ">=9.12.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "jupyterlab", specifier = ">=4.5.6" },
-    { name = "matplotlib", specifier = ">=3.10.0" },
-    { name = "mwa-hyperbeam", specifier = ">=0.10.4" },
     { name = "ruff", specifier = ">=0.15.14" },
 ]
 
