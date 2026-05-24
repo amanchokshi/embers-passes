@@ -556,7 +556,6 @@ dependencies = [
     { name = "healpy" },
     { name = "jax" },
     { name = "matplotlib" },
-    { name = "mwa-hyperbeam" },
     { name = "numpy" },
     { name = "numpyro" },
     { name = "pymc" },
@@ -571,6 +570,7 @@ dev = [
     { name = "ipython" },
     { name = "jupyter" },
     { name = "jupyterlab" },
+    { name = "mwa-hyperbeam" },
     { name = "ruff" },
 ]
 
@@ -580,6 +580,7 @@ dev = [
     { name = "ipython" },
     { name = "jupyter" },
     { name = "jupyterlab" },
+    { name = "mwa-hyperbeam" },
     { name = "ruff" },
 ]
 
@@ -595,7 +596,7 @@ requires-dist = [
     { name = "jupyter", marker = "extra == 'dev'", specifier = ">=1.1.1" },
     { name = "jupyterlab", marker = "extra == 'dev'", specifier = ">=4.5.6" },
     { name = "matplotlib", specifier = ">=3" },
-    { name = "mwa-hyperbeam", specifier = ">=0.10" },
+    { name = "mwa-hyperbeam", marker = "extra == 'dev'", specifier = ">=0.10" },
     { name = "numpy", specifier = ">=2" },
     { name = "numpyro", specifier = ">=0.21" },
     { name = "pymc", specifier = ">=6" },
@@ -612,6 +613,7 @@ dev = [
     { name = "ipython", specifier = ">=9.12.0" },
     { name = "jupyter", specifier = ">=1.1.1" },
     { name = "jupyterlab", specifier = ">=4.5.6" },
+    { name = "mwa-hyperbeam", specifier = ">=0.10" },
     { name = "ruff", specifier = ">=0.15.14" },
 ]
 
