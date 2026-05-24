@@ -290,11 +290,11 @@ if __name__ == "__main__":
     mcmc = MCMC(
         kernel, 
         num_warmup=args.num_warmup, 
-        num_samples=args.num_samples, 
+        num_samples=args.num_sample, 
         num_chains=args.ndevice
     )
 
-    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real)
+    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real, progress_bar=False)
     idata = az.from_numpyro(mcmc)
     idata.to_netcdf(f"{args.outdir}/mcmc_out_{tag}.nc")
 
