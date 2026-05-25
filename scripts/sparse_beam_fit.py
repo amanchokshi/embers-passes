@@ -11,6 +11,8 @@ from pyuvdata import UVBeam
 
 from scipy.stats import binned_statistic_2d, laplace
 
+from functools import partial
+
 import arviz as az
 
 def to_lin(db):
@@ -87,9 +89,15 @@ def get_pass_subset(passes, end_ind, start_ind=0, db_cut=3):
     
     return ret
 
+def get_pass_cond(p, db_cut=3):
+        # Sometimes there are outlier passes with crazy data -- 3 dB cut gets rid of them for at least a couple instances
+        # Some points come in below the horizon
+    return (max(p.power_db) < db_cut) and (all(p.alt_deg > 0))
+
 def stack_pass_attr(attr, passes, end_ind, start_ind=0, db_cut=3):
-    # Sometimes there are outlier passes with crazy data -- 3 dB cut gets rid of them for at least a couple instances
-    return np.concatenate([getattr(p, attr) for p in passes[start_ind:end_ind] if max(p.power_db) < db_cut])
+    filter_fn = partial(get_pass_cond, db_cut=db_cut)
+    filtered_passes = filter(filter_fn, passes[start_ind:end_ind])
+    return np.concatenate([getattr(p, attr) for p in filtered_passes])
 
 def plot_pass_subset(alt_deg, az_deg, power_db):
     az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
