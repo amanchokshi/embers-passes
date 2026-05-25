@@ -4,12 +4,9 @@ from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_kno
 import numpy as np
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import LogNorm
 
 
 from pyuvdata import UVBeam
-
-from scipy.stats import binned_statistic_2d, laplace
 
 from functools import partial
 
