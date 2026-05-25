@@ -1,7 +1,7 @@
 import yaml
 import argparse
 import random
-import az
+import arviz as az
 
 def load_config(config_path: str) -> argparse.Namespace:
     """
