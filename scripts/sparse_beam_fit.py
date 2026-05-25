@@ -299,7 +299,7 @@ if __name__ == "__main__":
         num_chains=args.ndevice
     )
 
-    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real, progress_bar=False)
+    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real)
     idata = az.from_numpyro(mcmc)
     idata.to_netcdf(f"{args.outdir}/mcmc_out_{tag}.nc")
 
