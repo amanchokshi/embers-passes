@@ -1,6 +1,7 @@
 import yaml
 import argparse
 import random
+import az
 
 def load_config(config_path: str) -> argparse.Namespace:
     """
@@ -75,3 +76,15 @@ def write_configs(
             filename = f"{outdir}/config_tile{tile}_{pol}.yaml"
             with open(filename, "w") as f:
                 yaml.dump(config, f, default_flow_style=False)
+
+def run_diagnostics(idata):
+    """
+    Run arviz diagnostics on an InferenceData object and print useful info.
+    """
+    has_errors, diagnostics = az.diagnose(idata, return_diagnostics=True)
+
+    if has_errors:
+        print("Some tests failed!")
+        print(diagnostics)
+    else:
+        print("All tests passed!")

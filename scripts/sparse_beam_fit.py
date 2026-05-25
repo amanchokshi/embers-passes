@@ -1,5 +1,5 @@
 from pathlib import Path
-from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid, load_config
+from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid, load_config, run_diagnostics
 
 import numpy as np
 
@@ -297,4 +297,6 @@ if __name__ == "__main__":
     mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real, progress_bar=False)
     idata = az.from_numpyro(mcmc)
     idata.to_netcdf(f"{args.outdir}/mcmc_out_{tag}.nc")
+
+    run_diagnostics(idata)
 
