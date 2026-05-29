@@ -445,14 +445,6 @@ def main() -> None:
     outdir = Path(args.outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    stem = (
-        f"smc_dirichlet_{args.pol}"
-        f"_seed{args.seed}"
-        f"_draws{args.draws}"
-        f"_nside{args.nside}"
-        f"_freq{args.freq_hz:.0f}"
-    )
-
     metadata = {
         "seed": args.seed,
         "draws": args.draws,
@@ -466,6 +458,15 @@ def main() -> None:
         "chains": 1,
         "cores": 1,
     }
+
+    pass_stem = Path(args.pass_file).stem
+
+    stem = (
+        f"{pass_stem[:11]}"
+        f"_{metadata['pointing']}"
+        f"_S{args.seed}"
+        f"_D{args.draws}"
+    )
 
     with open(outdir / f"{stem}_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
