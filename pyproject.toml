@@ -39,6 +39,8 @@ dependencies = [
     "pyyaml",
     "scipy>=1.17",
     "zarr>=3",
+    "pandas>=3",
+    "seaborn>=0.13",
 ]
 
 [project.urls]
