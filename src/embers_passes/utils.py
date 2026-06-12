@@ -22,6 +22,7 @@ def load_config(config_path: str) -> argparse.Namespace:
         "mix_model": False,
         "jackknife": False,
         "jackknife_mode": "time",
+        "jackknife_half": 0,
         "jackknife_key": 224007541
     }
 
