@@ -50,17 +50,15 @@ def get_res(az_rad, za_rad, power_db):
     return res, model_beam
 
 # Good candidate for some util functions for the module -- should get rid of global variable dependence
-def get_pass_subset(passes, end_ind, start_ind=0, db_cut=3):
+def get_pass_subset(passes, slc=slice(), db_cut=3):
     """
     Get a pass subset including the altitudes, azimuths, and power measurements in dB.
 
     Args:
         passes (list):
             List of satellite pass records.
-        end_ind (int):
-            The stop index of a slice into passes.
-        start_ind (int):
-            The start index of a slice into passes.
+        slc (slice):
+            A slice object for slicing into passes.
         db_cut (float):
             A lower cutoff such that if any power measurements are above it, 
             the corresponding pass data are excluded from the returned items.
@@ -78,8 +76,7 @@ def get_pass_subset(passes, end_ind, start_ind=0, db_cut=3):
             stack_pass_attr(
                 attr, 
                 passes, 
-                end_ind, 
-                start_ind=start_ind, 
+                slc, 
                 db_cut=db_cut
             )
         )
@@ -91,9 +88,9 @@ def get_pass_cond(p, db_cut=3):
         # Some points come in below the horizon
     return (max(p.power_db) < db_cut) and (all(p.alt_deg > 0))
 
-def stack_pass_attr(attr, passes, end_ind, start_ind=0, db_cut=3):
+def stack_pass_attr(attr, passes, slc=slice(), db_cut=3):
     filter_fn = partial(get_pass_cond, db_cut=db_cut)
-    filtered_passes = filter(filter_fn, passes[start_ind:end_ind])
+    filtered_passes = filter(filter_fn, passes[slc])
     return np.concatenate([getattr(p, attr) for p in filtered_passes])
 
 def plot_pass_subset(alt_deg, az_deg, power_db):
