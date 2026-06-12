@@ -125,7 +125,7 @@ if __name__ == "__main__":
 
     import sys
     args = load_config(sys.argv[1])
-
+    from shutil import copy
     import random as pyrandom
     
     import numpyro
@@ -137,7 +137,8 @@ if __name__ == "__main__":
     import jax
 
     import arviz_base as az
-    
+    # Bring config over so it's easy to find later
+    copy(sys.argv[1], args.outdir)
 
     # FIXME: Hardcode -- only zenith
     delays = np.zeros(16, dtype=int)
