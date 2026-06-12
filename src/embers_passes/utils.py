@@ -1,6 +1,8 @@
 import yaml
 import argparse
 import random
+import itertools
+
 import arviz as az
 
 def load_config(config_path: str) -> argparse.Namespace:
@@ -50,6 +52,7 @@ def write_configs(
     outdir: str,
     tiles: list = None,
     pols: list = None,
+    jackknives: list = None,
 ) -> None:
     """
     Write one YAML config file per (tile, pol) combination.
@@ -60,6 +63,7 @@ def write_configs(
         tiles:       list of tile strings e.g. ["08", "09", "10"]
         pols:        list of polarisations e.g. ["XX", "YY"]
         outdir:      directory to write config files into
+        jackknives:  list of jackknives to do ("time" or "random").
     """
     
     JAX_KEY_MAX = 2**32 - 1
@@ -74,20 +78,34 @@ def write_configs(
     tiles = [f"{t:02d}" if isinstance(t, int) else t for t in tiles]
     pols = pols if pols is not None else ["XX", "YY"]
 
-    for tile in tiles:
-        for pol in pols:
-            key = random.randint(0, JAX_KEY_MAX)
-            jackknife_key =  random.randint(0, JAX_KEY_MAX)
-            config = {
-                **base_config,
-                "tile": tile,
-                "pol": pol,
-                "key": key,
-                "jackknife_key": jackknife_key
-            }
-            filename = f"{outdir}/config_tile{tile}_{pol}.yaml"
-            with open(filename, "w") as f:
-                yaml.dump(config, f, default_flow_style=False)
+    product_args = [tiles, pols]
+    if jackknives is not None:
+        product_args.append(jackknives)
+        product_args.append([0, 1])
+
+    for param_tuple in itertools.product(*product_args):
+        key = random.randint(0, JAX_KEY_MAX)
+        tile, pol = param_tuple[:2]
+        config = {
+            **base_config,
+            "tile": tile,
+            "pol": pol,
+            "key": key,
+        }
+        filename = f"{outdir}/config_tile{tile}_{pol}"
+        if jackknives is not None:
+            jk_mode, jk_half = param_tuple[2:]
+            jk_key =  random.randint(0, JAX_KEY_MAX)
+            config["jackknife"] = True
+            config["jackknife_mode"] = jk_mode
+            config["jackknife_half"] = jk_half
+            config["jackknife_key"] = jk_key
+
+            filename += f"jk{jk_mode}_half{jk_half}"
+
+        filename += ".yaml"
+        with open(filename, "w") as f:
+            yaml.dump(config, f, default_flow_style=False)
 
 def run_diagnostics(idata):
     """
