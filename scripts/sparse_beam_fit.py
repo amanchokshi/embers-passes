@@ -137,8 +137,6 @@ if __name__ == "__main__":
     import jax
 
     import arviz_base as az
-    # Bring config over so it's easy to find later
-    copy(sys.argv[1], args.outdir)
 
     # FIXME: Hardcode -- only zenith
     delays = np.zeros(16, dtype=int)
@@ -161,7 +159,13 @@ if __name__ == "__main__":
     assert args.pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
     pol_ind = pol_ind_dict[args.pol]
 
-    tag = f"rf{args.rf_num}_S{args.tile}_{args.pol}"
+    subdir = f"rf{args.rf_num}/S{args.tile}/{args.pol}"
+    if args.jackknife:
+        subdir += f"/{args.jk_mode}_jackknife/half{args.jackknife_half}"
+    outdir = f"{args.outdir}/{subdir}"
+    
+    # Bring config over so it's easy to find later
+    copy(sys.argv[1], f"{outdir}/")
 
     path = Path(f"{args.indir}/rf{args.rf_num}/S{args.tile}{args.pol}_rf{args.rf_num}{args.pol}_passes.h5")
     pf = PassFile(path)
@@ -325,7 +329,7 @@ if __name__ == "__main__":
 
     mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real)
     idata = az.from_numpyro(mcmc)
-    idata.to_netcdf(f"{args.outdir}/mcmc_out_{tag}.nc")
+    idata.to_netcdf(f"{outdir}/mcmc_out.nc")
 
     run_diagnostics(idata)
 
