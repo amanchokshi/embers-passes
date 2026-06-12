@@ -125,6 +125,8 @@ if __name__ == "__main__":
 
     import sys
     args = load_config(sys.argv[1])
+
+    import random as pyrandom
     
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
@@ -165,8 +167,32 @@ if __name__ == "__main__":
     # FIXME: Only 0 pointing
     passes = pf.read_passes(pointing=0)
 
-    
-    alt_deg, az_deg, power_db = get_pass_subset(passes, args.num_pass)
+    if args.jackknife:
+        if args.jackknife_mode == "random": # shuffle the passes first
+            pyrandom.seed(args.jackknife_key)
+            pyrandom.shuffle(passes)
+        if args.jackknife_half: # implicitly second half
+            pass_slice = slice(
+                start=len(args.num_pass) // 2, 
+                stop=len(args.num_pass)
+            )
+        else: # otherwise first half
+            pass_slice = slice(
+                start=0, 
+                stop=len(args.num_pass) // 2
+            )
+    elif args.num_pass is None:
+        pass_slice = slice(
+            start=0,
+            stop=len(passes)
+        )
+    else:
+        pass_slice = slice(
+            start=0,
+            stop=args.num_pass
+        )
+
+    alt_deg, az_deg, power_db = get_pass_subset(passes, slc=pass_slice)
     az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
     res, model_beam = get_res(az_rad, za_rad, power_db)
 
