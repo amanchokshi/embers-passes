@@ -8,9 +8,13 @@ pol: XX
 tile: "08"        # Leading zero required for single digits
 rf_num: 0
 plotting: false
-num_pass: 1000
+num_pass: None # Use all passes
 ndevice: 4
 key: 338422580
 num_warmup: 1000
 num_sample: 2000
 mix_model: false
+jackknife: false
+jackknife_mode: "time" # "random" also allowed
+jackknife_half: 0
+jackknife_key: 224007541
