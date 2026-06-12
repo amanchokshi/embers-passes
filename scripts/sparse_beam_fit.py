@@ -50,7 +50,7 @@ def get_res(az_rad, za_rad, power_db):
     return res, model_beam
 
 # Good candidate for some util functions for the module -- should get rid of global variable dependence
-def get_pass_subset(passes, slc=slice(), db_cut=3):
+def get_pass_subset(passes, slc=slice(None), db_cut=3):
     """
     Get a pass subset including the altitudes, azimuths, and power measurements in dB.
 
@@ -88,7 +88,7 @@ def get_pass_cond(p, db_cut=3):
         # Some points come in below the horizon
     return (max(p.power_db) < db_cut) and (all(p.alt_deg > 0))
 
-def stack_pass_attr(attr, passes, slc=slice(), db_cut=3):
+def stack_pass_attr(attr, passes, slc=slice(None), db_cut=3):
     filter_fn = partial(get_pass_cond, db_cut=db_cut)
     filtered_passes = filter(filter_fn, passes[slc])
     return np.concatenate([getattr(p, attr) for p in filtered_passes])
@@ -127,6 +127,7 @@ if __name__ == "__main__":
     args = load_config(sys.argv[1])
     from shutil import copy
     import random as pyrandom
+    import os
     
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
@@ -161,8 +162,10 @@ if __name__ == "__main__":
 
     subdir = f"rf{args.rf_num}/S{args.tile}/{args.pol}"
     if args.jackknife:
-        subdir += f"/{args.jk_mode}_jackknife/half{args.jackknife_half}"
+        subdir += f"/{args.jackknife_mode}_jackknife/half{args.jackknife_half}"
     outdir = f"{args.outdir}/{subdir}"
+    if not os.path.exists(outdir):
+        os.makedirs(outdir)
     
     # Bring config over so it's easy to find later
     copy(sys.argv[1], f"{outdir}/")
@@ -171,6 +174,7 @@ if __name__ == "__main__":
     pf = PassFile(path)
     # FIXME: Only 0 pointing
     passes = pf.read_passes(pointing=0)
+    Npass_total = len(passes)
 
     if args.jackknife:
         if args.jackknife_mode == "random": # shuffle the passes first
@@ -178,23 +182,23 @@ if __name__ == "__main__":
             pyrandom.shuffle(passes)
         if args.jackknife_half: # implicitly second half
             pass_slice = slice(
-                start=len(args.num_pass) // 2, 
-                stop=len(args.num_pass)
+                Npass_total // 2, 
+                Npass_total
             )
         else: # otherwise first half
             pass_slice = slice(
-                start=0, 
-                stop=len(args.num_pass) // 2
+                0, 
+                Npass_total // 2
             )
     elif args.num_pass is None:
         pass_slice = slice(
-            start=0,
-            stop=len(passes)
+            0,
+            Npass_total
         )
     else:
         pass_slice = slice(
-            start=0,
-            stop=args.num_pass
+            0,
+            args.num_pass
         )
 
     alt_deg, az_deg, power_db = get_pass_subset(passes, slc=pass_slice)

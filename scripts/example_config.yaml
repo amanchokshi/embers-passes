@@ -8,7 +8,7 @@ pol: XX
 tile: "08"        # Leading zero required for single digits
 rf_num: 0
 plotting: false
-num_pass: None # Use all passes
+num_pass: null # Use all passes
 ndevice: 4
 key: 338422580
 num_warmup: 1000
