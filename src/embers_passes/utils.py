@@ -38,7 +38,7 @@ def load_config(config_path: str) -> argparse.Namespace:
         raise ValueError(f"Missing required config fields: {missing}")
     
     # Check for valid jackknife modes
-    valid_jk_modes = ["time", "random", "full"]
+    valid_jk_modes = ["time", "random"]
     selected_mode = config.get("jackknife_mode")
     if selected_mode not in valid_jk_modes:
         raise ValueError(f"jackknife_mode {selected_mode} is invalid; must be in {valid_jk_modes}")
