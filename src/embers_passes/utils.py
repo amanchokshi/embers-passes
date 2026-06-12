@@ -14,12 +14,15 @@ def load_config(config_path: str) -> argparse.Namespace:
         "tile": "08",
         "rf_num": 0,
         "plotting": False,
-        "num_pass": 1000,
+        "num_pass": None,
         "ndevice": 4,
         "key": 338422580,
         "num_warmup": 1000,
         "num_sample": 2000,
         "mix_model": False,
+        "jackknife": False,
+        "jackknife_mode": "time",
+        "jackknife_key": 224007541
     }
 
     with open(config_path, "r") as f:
@@ -32,6 +35,12 @@ def load_config(config_path: str) -> argparse.Namespace:
     missing = [field for field in required if config.get(field) is None]
     if missing:
         raise ValueError(f"Missing required config fields: {missing}")
+    
+    # Check for valid jackknife modes
+    valid_jk_modes = ["time", "random", "full"]
+    selected_mode = config.get("jackknife_mode")
+    if selected_mode not in valid_jk_modes:
+        raise ValueError(f"jackknife_mode {selected_mode} is invalid; must be in {valid_jk_modes}")
 
     return argparse.Namespace(**config)
 
