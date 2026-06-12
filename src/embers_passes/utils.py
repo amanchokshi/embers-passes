@@ -76,12 +76,14 @@ def write_configs(
 
     for tile in tiles:
         for pol in pols:
-            key = random.randint(0, JAX_KEY_MAX) 
+            key = random.randint(0, JAX_KEY_MAX)
+            jackknife_key =  random.randint(0, JAX_KEY_MAX)
             config = {
                 **base_config,
                 "tile": tile,
                 "pol": pol,
                 "key": key,
+                "jackknife_key": jackknife_key
             }
             filename = f"{outdir}/config_tile{tile}_{pol}.yaml"
             with open(filename, "w") as f:
