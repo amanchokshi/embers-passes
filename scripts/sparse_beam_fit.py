@@ -121,6 +121,15 @@ def plot_pass_ratio(outfile, az_rad, za_rad, res):
     fig.savefig(outfile)
     plt.close(fig)
 
+def prep_spline_params(beam):
+    theta_param = beam.axis2_array[1::10] # avoid the origin by a quarter degree
+    phi_param = beam.axis1_array[::10]
+
+    # ONCE, outside the model:
+    t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
+    Nparam = n_th * n_ph
+    return t_theta, t_phi, p, q, n_th, n_ph, Nparam
+
 if __name__ == "__main__":
 
     import sys
@@ -207,12 +216,7 @@ if __name__ == "__main__":
 
 
     # Do some Bayesian inference with MCMC (NUTS) on some short chains
-    theta_param = beam.axis2_array[1::10] # avoid the origin by a quarter degree
-    phi_param = beam.axis1_array[::10]
-
-    # ONCE, outside the model:
-    t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
-    Nparam = n_th * n_ph
+    t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
         arg_constraints = {

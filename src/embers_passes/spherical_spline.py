@@ -309,6 +309,23 @@ def eval_spline_batch(
     """Evaluate at N points → (N,) array."""
     return jax.vmap(lambda th, ph: eval_spline(spl, th, ph))(theta, phi)
 
+def eval_spline_samples(
+    spl:    SphericalSpline,   # c has shape (S, n_theta, n_phi)
+    theta:  jnp.ndarray,       # scalar or (N,)
+    phi:    jnp.ndarray,       # scalar or (N,)
+) -> jnp.ndarray:              # (S,) or (S, N)
+    """Evaluate over S posterior samples of c.
+
+    vmap is over the leading sample axis of spl.c; theta/phi are treated
+    as fixed (in_axes=None broadcasts them across samples).
+    """
+    return jax.vmap(
+        lambda c: eval_spline_batch(
+            SphericalSpline(spl.t_theta, spl.t_phi, c, spl.p, spl.q),
+            theta, phi,
+        )
+    )(spl.c)  # vmap sees spl.c as (S, n_theta, n_phi) and maps over axis 0
+
 
 # ---------------------------------------------------------------------------
 # Demo / smoke test
