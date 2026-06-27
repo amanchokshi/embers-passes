@@ -326,6 +326,56 @@ def eval_spline_samples(
         )
     )(spl.c)  # vmap sees spl.c as (S, n_theta, n_phi) and maps over axis 0
 
+def make_disk_mask(t_u, t_v, p, q):
+    """Boolean mask of shape (n_u, n_v): True where B_i(u)*B_j(v) has
+    support intersecting the unit disk. Computed once at setup time (numpy).
+
+    Strategy: the support of B_{i,p} is (t_u[i], t_u[i+p+1]).
+    B_i(u)*B_j(v) can be nonzero on the disk iff the rectangle
+    (t_u[i], t_u[i+p+1]) x (t_v[j], t_v[j+p+1]) intersects the unit disk.
+    We check this geometrically: a rectangle intersects the unit disk iff
+    the closest point in the rectangle to the origin has norm <= 1.
+    """
+    t_u = np.array(t_u); t_v = np.array(t_v)
+    n_u = len(t_u) - p - 1
+    n_v = len(t_v) - q - 1
+    mask = np.zeros((n_u, n_v), dtype=bool)
+    for i in range(n_u):
+        u_lo, u_hi = t_u[i], t_u[i + p + 1]
+        for j in range(n_v):
+            v_lo, v_hi = t_v[j], t_v[j + q + 1]
+            # Closest point in [u_lo,u_hi]x[v_lo,v_hi] to origin
+            u_near = np.clip(0.0, u_lo, u_hi)
+            v_near = np.clip(0.0, v_lo, v_hi)
+            if u_near**2 + v_near**2 <= 1.0:
+                mask[i, j] = True
+    return mask
+
+def make_flat_index(mask):
+    """Map from flat sample index -> (i, j) coefficient index.
+    Returns (flat_to_ij, n_active) where flat_to_ij has shape (n_active, 2).
+    """
+    ij = np.argwhere(mask)          # (n_active, 2)
+    return ij, len(ij)
+
+def scatter_coeffs(c_flat, mask, ij):
+    """Scatter n_active sampled coefficients into full (n_u, n_v) array.
+    JAX-compatible: uses jnp.zeros + indexed update (no Python control flow).
+
+    Parameters
+    ----------
+    c_flat : (n_active,)  — the sampled coefficients
+    mask   : (n_u, n_v)   — boolean mask (static, not traced)
+    ij     : (n_active, 2) — integer indices (static)
+
+    Returns
+    -------
+    c_full : (n_u, n_v)   — zero outside disk, c_flat inside
+    """
+    n_u, n_v = mask.shape
+    c_full = jnp.zeros((n_u, n_v), dtype=c_flat.dtype)
+    return c_full.at[ij[:, 0], ij[:, 1]].set(c_flat)
+
 
 # ---------------------------------------------------------------------------
 # Demo / smoke test
