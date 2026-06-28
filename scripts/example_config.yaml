@@ -18,3 +18,4 @@ jackknife: false
 jackknife_mode: "time" # "random" also allowed
 jackknife_half: 0
 jackknife_key: 224007541
+ortho_knots: false

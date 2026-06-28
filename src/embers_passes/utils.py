@@ -25,7 +25,8 @@ def load_config(config_path: str) -> argparse.Namespace:
         "jackknife": False,
         "jackknife_mode": "time",
         "jackknife_half": 0,
-        "jackknife_key": 224007541
+        "jackknife_key": 224007541,
+        "ortho_knots": False
     }
 
     with open(config_path, "r") as f:

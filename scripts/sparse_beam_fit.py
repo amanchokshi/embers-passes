@@ -1,5 +1,7 @@
 from pathlib import Path
-from embers_passes import PassFile, SphericalSpline, eval_spline_batch, make_knots_from_grid, load_config, run_diagnostics
+from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
+    make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
+    make_disk_mask, make_flat_index
 
 import numpy as np
 
@@ -121,14 +123,34 @@ def plot_pass_ratio(outfile, az_rad, za_rad, res):
     fig.savefig(outfile)
     plt.close(fig)
 
-def prep_spline_params(beam):
-    theta_param = beam.axis2_array[1::10] # avoid the origin by a quarter degree
-    phi_param = beam.axis1_array[::10]
+def prep_spline_params(beam, ortho_knots=False):
+    if ortho_knots:
+        interval_1 = np.arange(-1., -0.6, 0.05)
+        interval_2 = np.arange(-0.6, -0.4, 0.025)
+        interval_3 = np.arange(-0.4, 0., 0.1)
 
-    # ONCE, outside the model:
-    t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
-    Nparam = n_th * n_ph
-    return t_theta, t_phi, p, q, n_th, n_ph, Nparam
+        base_knots = np.concatenate([
+            interval_1, 
+            interval_2, 
+            interval_3,
+            np.atleast_1d([0.]),
+            -interval_3,
+            -interval_2,
+            -interval_1
+        ])
+
+        t_x, t_y, p, q, n_x, n_y = make_knots_from_grid(base_knots, base_knots)
+        Nparam = n_x * n_y
+
+        return t_x, t_y, p, q, n_x, n_y, Nparam
+    else:
+        theta_param = beam.axis2_array[1::10] # avoid the origin by a quarter degree
+        phi_param = beam.axis1_array[::10]
+
+        # ONCE, outside the model:
+        t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
+        Nparam = n_th * n_ph
+        return t_theta, t_phi, p, q, n_th, n_ph, Nparam
 
 if __name__ == "__main__":
 
@@ -216,7 +238,12 @@ if __name__ == "__main__":
 
 
     # Do some Bayesian inference with MCMC (NUTS) on some short chains
-    t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
+    if args.ortho_knots:
+        t_x, t_y, p, q, n_x, n_y, Nparam = prep_spline_params(beam, ortho_knots=True)
+        knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_u, n_v) bool, numpy
+        knot_ij, n_active = make_flat_index(knot_mask)            # static arrays
+    else:
+        t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
         arg_constraints = {
@@ -254,12 +281,13 @@ if __name__ == "__main__":
             return self.scale * centered_samp + self.loc
 
     def vanilla_model(
-            za_data, 
-            az_data, 
+            dat_coord_1, 
+            dat_coord_2, 
             Ndat, 
             data=None, 
             add_noise_bias=False,
-            noise_bias=1e-6
+            noise_bias=1e-6,
+            ortho_knots=False
     ):
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
         scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
@@ -267,8 +295,14 @@ if __name__ == "__main__":
         with numpyro.plate("Nparam", Nparam):
             surf_vals = numpyro.sample("surf_vals",
                                        dist.SoftLaplace(loc=0, scale=scale_vals))
-        spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
-        model_vals = eval_spline_batch(spl, za_data, az_data)
+            
+        if ortho_knots:
+            surf_vals_model = scatter_coeffs(surf_vals, knot_mask, knot_ij)
+            spl = SphericalSpline(t_x, t_y, surf_vals_model, p, q)
+        else:
+            spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
+        
+        model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
         if add_noise_bias:
             model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
         
@@ -324,6 +358,7 @@ if __name__ == "__main__":
             obs = numpyro.sample("obs",
                                 dist.SoftLaplace(loc=model_vals, scale=scale_noise),
                                 obs=data)
+            
     model = mixture_model if args.mix_model else vanilla_model
 
     key = random.key(args.key)
@@ -334,8 +369,20 @@ if __name__ == "__main__":
         num_samples=args.num_sample, 
         num_chains=args.ndevice
     )
-
-    mcmc.run(key, za_rad, az_rad, len(res.real), data=res.real)
+    if args.ortho_knots:
+        dat_coord_1 = jnp.sin(za_rad) * jnp.cos(az_rad)
+        dat_coord_2 = jnp.sin(za_rad) * jnp.sin(az_rad)
+    else:
+        dat_coord_1 = za_rad
+        dat_coord_2 = az_rad
+    mcmc.run(
+        key, 
+        dat_coord_1,
+        dat_coord_2, 
+        len(res.real), 
+        data=res.real,
+        ortho_knots=args.ortho_knots
+    )
     idata = az.from_numpyro(mcmc)
     idata.to_netcdf(f"{outdir}/mcmc_out.nc")
 
