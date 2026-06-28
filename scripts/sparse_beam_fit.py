@@ -242,6 +242,14 @@ if __name__ == "__main__":
         t_x, t_y, p, q, n_x, n_y, Nparam = prep_spline_params(beam, ortho_knots=True)
         knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_u, n_v) bool, numpy
         knot_ij, n_active = make_flat_index(knot_mask)            # static arrays
+        
+        xgrad_base = np.linspace(-1, 1, num=100)
+        ygrad_base = np.copy(xgrad_base)
+        Xgrad, Ygrad = np.meshgrid(xgrad_base, ygrad_base, indexing="ij")
+
+        grad_mask = make_disk_mask(xgrad_base, ygrad_base, p, q)
+        Xgrad = Xgrad[grad_mask]
+        Ygrad = Ygrad[grad_mask]
     else:
         t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
 
@@ -299,14 +307,16 @@ if __name__ == "__main__":
         if ortho_knots:
             surf_vals_model = scatter_coeffs(surf_vals, knot_mask, knot_ij)
             spl = SphericalSpline(t_x, t_y, surf_vals_model, p, q)
+            # Knots unevenly spaced, use autodiff
+            grad = jax.grad(lambda x, y: eval_spline_batch(spl, x, y))(Xgrad, Ygrad)
         else:
             spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
-        
+            grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
         model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
         if add_noise_bias:
             model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
         
-        grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
+        
         lp1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
         lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
         numpyro.factor("grad_pot", lp1 + lp2)
