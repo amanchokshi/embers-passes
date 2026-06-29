@@ -376,7 +376,7 @@ def scatter_coeffs(c_flat, mask, ij):
     c_full = jnp.zeros((n_u, n_v), dtype=c_flat.dtype)
     return c_full.at[ij[:, 0], ij[:, 1]].set(c_flat)
 
-def make_constraint_info(t_u, t_v, p, q, u0, v0, ij, f0):
+def make_constraint_info(t_u, t_v, p, q, u0, v0, ij):
     """
     Compute everything needed to enforce f(u0, v0) = f0 as a linear constraint
     by expressing one coefficient as a deterministic function of the others.
