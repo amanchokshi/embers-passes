@@ -376,6 +376,117 @@ def scatter_coeffs(c_flat, mask, ij):
     c_full = jnp.zeros((n_u, n_v), dtype=c_flat.dtype)
     return c_full.at[ij[:, 0], ij[:, 1]].set(c_flat)
 
+def make_constraint_info(t_u, t_v, p, q, u0, v0, ij, f0):
+    """
+    Compute everything needed to enforce f(u0, v0) = f0 as a linear constraint
+    by expressing one coefficient as a deterministic function of the others.
+
+    At (u0, v0), only (p+1)*(q+1) basis functions are nonzero. Their indices
+    in the full (n_u, n_v) grid are the 'active' set. We pick one of them
+    (the 'pivot') to solve for deterministically, and the rest are sampled freely.
+
+    Parameters
+    ----------
+    t_u, t_v : knot vectors (numpy)
+    p, q     : degrees
+    u0, v0   : reference point
+    ij       : (n_active, 2) int array from make_flat_index — the mask-active indices
+    f0       : desired function value at (u0, v0)
+
+    Returns
+    -------
+    pivot_flat_idx : int
+        Index into c_flat (the n_active-length vector) of the pivot coefficient.
+        c_flat will have length n_active - 1 (free params); the pivot is inserted
+        at this position.
+    pivot_weight : float
+        The basis value B_{i*,p}(u0) * B_{j*,q}(v0) for the pivot coefficient.
+        The pivot coefficient = (f0 - sum of others * their weights) / pivot_weight.
+    contrib_flat_idxs : (p+1)*(q+1) int array
+        Indices into c_flat of ALL basis functions active at (u0,v0), including pivot.
+    contrib_weights : (p+1)*(q+1) float array
+        Corresponding basis values at (u0, v0).
+    """
+    t_u = np.array(t_u); t_v = np.array(t_v)
+    n_u = len(t_u) - p - 1
+    n_v = len(t_v) - q - 1
+
+    # Active span indices at (u0, v0)
+    i_star = int(np.clip(np.searchsorted(t_u, u0, side='right') - 1, p, n_u - 1))
+    j_star = int(np.clip(np.searchsorted(t_v, v0, side='right') - 1, q, n_v - 1))
+
+    # Global (i, j) indices of the (p+1)*(q+1) nonzero basis functions
+    i_idxs = np.arange(i_star - p, i_star + 1)  # (p+1,)
+    j_idxs = np.arange(j_star - q, j_star + 1)  # (q+1,)
+    ii, jj = np.meshgrid(i_idxs, j_idxs, indexing='ij')
+    ij_contrib = np.stack([ii.ravel(), jj.ravel()], axis=1)  # ((p+1)*(q+1), 2)
+
+    # Evaluate basis values at (u0, v0) via de Boor (numpy, static)
+    from scipy.interpolate import BSpline
+    b_u = BSpline.design_matrix(np.array([u0]), t_u, p).toarray()[0]  # (n_u,)
+    b_v = BSpline.design_matrix(np.array([v0]), t_v, q).toarray()[0]  # (n_v,)
+    # Outer product, then extract the active block
+    weights_2d = np.outer(b_u[i_idxs], b_v[j_idxs])  # (p+1, q+1)
+    weights = weights_2d.ravel()                        # ((p+1)*(q+1),)
+
+    # Map (i,j) -> flat index in c_flat via ij lookup
+    # ij is (n_active, 2); build a dict for O(1) lookup
+    ij_to_flat = {(r[0], r[1]): k for k, r in enumerate(ij)}
+    contrib_flat_idxs = np.array([ij_to_flat[(r[0], r[1])] for r in ij_contrib])
+
+    # Choose pivot: the contributor with the largest |weight| for numerical stability
+    pivot_local = int(np.argmax(np.abs(weights)))
+    pivot_flat_idx = int(contrib_flat_idxs[pivot_local])
+    pivot_weight   = float(weights[pivot_local])
+
+    return pivot_flat_idx, pivot_weight, contrib_flat_idxs, weights
+
+
+def inject_pivot(c_free, pivot_flat_idx, pivot_weight,
+                 contrib_flat_idxs, contrib_weights, f0):
+    """
+    Given n_active-1 free coefficients, insert the deterministic pivot so that
+    f(u0, v0) = f0 is satisfied, returning a c_flat of length n_active.
+
+    The constraint is:
+        sum_k  contrib_weights[k] * c_flat[contrib_flat_idxs[k]]  =  f0
+    Solving for the pivot:
+        c_pivot = (f0 - sum_{k != pivot} w_k * c_k) / w_pivot
+
+    Parameters
+    ----------
+    c_free           : (n_active - 1,) JAX array of free coefficients
+    pivot_flat_idx   : int  (static)
+    pivot_weight     : float (static)
+    contrib_flat_idxs: (n_contrib,) int array (static)
+    contrib_weights  : (n_contrib,) float array (static)
+    f0               : desired value (scalar, may be JAX-traced)
+
+    Returns
+    -------
+    c_flat : (n_active,) JAX array with pivot inserted
+    """
+    # Shift: c_free is indexed 0..n_active-2; positions >= pivot_flat_idx
+    # in the final c_flat are at position-1 in c_free.
+    # Insert a placeholder zero at pivot position, then overwrite.
+    c_flat = jnp.concatenate([
+        c_free[:pivot_flat_idx],
+        jnp.zeros(1, dtype=c_free.dtype),
+        c_free[pivot_flat_idx:],
+    ])
+
+    # Indices of non-pivot contributors in c_flat (after insertion, so same
+    # as contrib_flat_idxs since pivot slot was zero before overwrite)
+    mask_not_pivot = contrib_flat_idxs != pivot_flat_idx
+    other_idxs    = contrib_flat_idxs[mask_not_pivot]   # static
+    other_weights = contrib_weights[mask_not_pivot]      # static
+
+    # Compute pivot value
+    other_sum  = jnp.dot(jnp.array(other_weights), c_flat[other_idxs])
+    c_pivot    = (f0 - other_sum) / pivot_weight
+
+    return c_flat.at[pivot_flat_idx].set(c_pivot)
+
 
 # ---------------------------------------------------------------------------
 # Demo / smoke test

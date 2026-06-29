@@ -1,7 +1,7 @@
 from pathlib import Path
 from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
-    make_disk_mask, make_flat_index
+    make_disk_mask, make_flat_index, make_constraint_info, inject_pivot
 
 import numpy as np
 
@@ -239,10 +239,12 @@ if __name__ == "__main__":
 
     # Do some Bayesian inference with MCMC (NUTS) on some short chains
     if args.ortho_knots:
+        # Basic knot stuff
         t_x, t_y, p, q, n_x, n_y, Nparam = prep_spline_params(beam, ortho_knots=True)
         knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_u, n_v) bool, numpy
         knot_ij, n_active = make_flat_index(knot_mask)            # static arrays
         
+        # Gradient stuff
         xgrad_base = np.linspace(-1, 1, num=100)
         ygrad_base = np.copy(xgrad_base)
         Xgrad, Ygrad = np.meshgrid(xgrad_base, ygrad_base, indexing="ij")
@@ -250,6 +252,13 @@ if __name__ == "__main__":
         grad_mask = make_disk_mask(xgrad_base, ygrad_base, p, q)
         Xgrad = Xgrad[grad_mask]
         Ygrad = Ygrad[grad_mask]
+
+
+        (
+            pivot_flat_idx, pivot_weight, contrib_flat_idxs, contrib_weights
+        ) = make_constraint_info(
+            t_x, t_y, p, q, u0=0, v0=0, ij=knot_ij, f0=0 # FIXME: Hardcode zenith-pointed
+        )
     else:
         t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
 
@@ -300,9 +309,11 @@ if __name__ == "__main__":
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
         scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
         scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
-        with numpyro.plate("Nparam", Nparam):
+        with numpyro.plate("Nparam", Nparam - 1): # Need to enforce peak-normalization
             surf_vals = numpyro.sample("surf_vals",
                                        dist.SoftLaplace(loc=0, scale=scale_vals))
+        surf_vals_model = inject_pivot(surf_vals, pivot_flat_idx, pivot_weight,
+                                       contrib_flat_idxs, contrib_weights, 0)
             
         if ortho_knots:
             surf_vals_model = scatter_coeffs(surf_vals, knot_mask, knot_ij)
@@ -310,8 +321,8 @@ if __name__ == "__main__":
             # Knots unevenly spaced, use autodiff
             grad = jax.grad(lambda x, y: eval_spline_batch(spl, x, y))(Xgrad, Ygrad)
         else:
-            spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
-            grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
+            spl = SphericalSpline(t_theta, t_phi, surf_vals_model.reshape(n_th, n_ph), p, q)
+            grad = jnp.gradient(surf_vals_model.reshape(n_th, n_ph))
         model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
         if add_noise_bias:
             model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
