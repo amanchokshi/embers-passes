@@ -247,6 +247,8 @@ if __name__ == "__main__":
         t_x, t_y, p, q, n_x, n_y, _= prep_spline_params(beam, ortho_knots=True)
         knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_u, n_v) bool, numpy
         knot_ij, Nparam = make_flat_index(knot_mask)            # static arrays
+        if args.enforce_boresight: # Sample one less parameter to satisfy constraint
+            Nparam -= 1
         
         # Gradient stuff
         xgrad_base = np.linspace(-1, 1, num=100)
@@ -309,17 +311,27 @@ if __name__ == "__main__":
             data=None, 
             add_noise_bias=False,
             noise_bias=1e-6,
-            ortho_knots=False
+            ortho_knots=False,
+            enforce_boresight=False,
     ):
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
         scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
         scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
-        with numpyro.plate("Nparam", Nparam - 1): # Need to enforce peak-normalization
+        with numpyro.plate("Nparam", Nparam): # Need to enforce peak-normalization
             surf_vals = numpyro.sample("surf_vals",
                                        dist.SoftLaplace(loc=0, scale=scale_vals))
-        # Hardcoded 0 since log-beam 0 at peak
-        surf_vals_model = inject_pivot(surf_vals, pivot_flat_idx, pivot_weight,
-                                       contrib_flat_idxs, contrib_weights, 0) 
+        if enforce_boresight:
+            # Hardcoded 0 since log-beam 0 at peak
+            surf_vals_model = inject_pivot(
+                surf_vals, 
+                pivot_flat_idx, 
+                pivot_weight,
+                contrib_flat_idxs, 
+                contrib_weights, 
+                0
+            ) 
+        else:
+            surf_vals_model = surf_vals
             
         if ortho_knots:
             surf_vals_model = scatter_coeffs(surf_vals_model, knot_mask, knot_ij)
@@ -398,7 +410,11 @@ if __name__ == "__main__":
         dat_coord_1 = za_rad
         dat_coord_2 = az_rad
     model_args = (dat_coord_1, dat_coord_2, len(res))
-    model_kwargs = {"data": res.real, "ortho_knots": args.ortho_knots}
+    model_kwargs = {
+        "data": res.real, 
+        "ortho_knots": args.ortho_knots, 
+        "enforce_boresight": args.enforce_boresight
+    }
     if args.svi:
         guide = AutoDelta(model)
         svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
