@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 from pyuvdata import UVBeam
 
 from functools import partial
+import pickle
 
 import arviz as az
 
@@ -164,7 +165,9 @@ if __name__ == "__main__":
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
     from numpyro import distributions as dist
-    from numpyro.infer import MCMC, NUTS
+    from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
+    from numpyro.infer.autoguide import AutoDelta   
+    
     from jax import random
     import jax.numpy as jnp
     import jax
@@ -387,31 +390,47 @@ if __name__ == "__main__":
                                 obs=data)
             
     model = mixture_model if args.mix_model else vanilla_model
-
     key = random.key(args.key)
-    kernel = NUTS(model)
-    mcmc = MCMC(
-        kernel, 
-        num_warmup=args.num_warmup, 
-        num_samples=args.num_sample, 
-        num_chains=args.ndevice
-    )
     if args.ortho_knots:
         dat_coord_1 = jnp.sin(za_rad) * jnp.cos(az_rad)
         dat_coord_2 = jnp.sin(za_rad) * jnp.sin(az_rad)
     else:
         dat_coord_1 = za_rad
         dat_coord_2 = az_rad
-    mcmc.run(
-        key, 
-        dat_coord_1,
-        dat_coord_2, 
-        len(res.real), 
-        data=res.real,
-        ortho_knots=args.ortho_knots
-    )
-    idata = az.from_numpyro(mcmc)
-    idata.to_netcdf(f"{outdir}/mcmc_out.nc")
+    model_args = (dat_coord_1, dat_coord_2, len(res))
+    model_kwargs = {"data": res.real, "ortho_knots": args.ortho_knots}
+    if args.svi:
+        guide = AutoDelta(model)
+        svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
+        svi_result = svi.run(
+            key, 
+            args.num_sample, 
+            *model_args, 
+            **model_kwargs
+        )
+        params = svi_result.params
+        plt.plot(svi_result.losses)
+        plt.ylabel("Loss")
+        plt.xlabel("Iteration")
+        plt.savefig(f"{outdir}/losses.pdf")
 
-    run_diagnostics(idata)
+        with open(f"{outdir}/svi_params.pkl", "wb") as svi_params_file:
+            pickle.dump(params, svi_params_file)
+    else:
+        kernel = NUTS(model)
+        mcmc = MCMC(
+            kernel, 
+            num_warmup=args.num_warmup, 
+            num_samples=args.num_sample, 
+            num_chains=args.ndevice
+        )
+        mcmc.run(
+            key, 
+            *model_args, 
+            **model_kwargs
+        )
+        idata = az.from_numpyro(mcmc)
+        idata.to_netcdf(f"{outdir}/mcmc_out.nc")
+
+        run_diagnostics(idata)
 
