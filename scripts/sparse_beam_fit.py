@@ -45,7 +45,7 @@ def get_res(az_rad, za_rad, power_db):
     Get the residual beam in dB (so the log of the ratio) between the measured
     power and the simulated model power at the az_deg and alt_deg in question.
     """
-
+    # FIXME: Uses beam as global
     model_beam = beam.interp(az_array=az_rad, za_array=za_rad)[0][0,pol_ind,0].real # It's a copol power beam
     model_beam_db = 10 * np.log10(model_beam) 
     assert np.all(np.isfinite(model_beam_db))
