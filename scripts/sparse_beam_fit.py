@@ -171,6 +171,7 @@ if __name__ == "__main__":
     from jax import random
     import jax.numpy as jnp
     import jax
+    jax.config.update("jax_debug_nans", True)
 
     import arviz_base as az
 
@@ -245,7 +246,7 @@ if __name__ == "__main__":
     if args.ortho_knots:
         # Basic knot stuff
         t_x, t_y, p, q, n_x, n_y, _= prep_spline_params(beam, ortho_knots=True)
-        knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_u, n_v) bool, numpy
+        knot_mask = make_disk_mask(t_x, t_y, p, q)           # (n_x, n_y) bool, numpy
         knot_ij, Nparam = make_flat_index(knot_mask)            # static arrays
         if args.enforce_boresight: # Sample one less parameter to satisfy constraint
             Nparam -= 1
@@ -336,9 +337,11 @@ if __name__ == "__main__":
         if ortho_knots:
             surf_vals_model = scatter_coeffs(surf_vals_model, knot_mask, knot_ij)
             spl = SphericalSpline(t_x, t_y, surf_vals_model, p, q)
-            model_for_grad = eval_spline_batch(spl, Xgrad.flatten(), Ygrad.flatten())
-            grad = jnp.gradient(model_for_grad.reshape(100, 100))
-            grad = (grad[0][grad_mask], grad[1][grad_mask])
+            #model_for_grad = eval_spline_batch(spl, Xgrad.flatten(), Ygrad.flatten())
+            #grad = jnp.gradient(model_for_grad.reshape(100, 100))
+            #grad = (grad[0][grad_mask], grad[1][grad_mask])
+            grad = jnp.gradient(surf_vals_model)
+            grad = (grad[0][knot_mask], grad[1][knot_mask])
             # Knots unevenly spaced, use autodiff
             #grad = jax.vmap(jax.grad(lambda x, y: eval_spline(spl, x, y)))(Xgrad, Ygrad)
         else:
@@ -409,9 +412,13 @@ if __name__ == "__main__":
     else:
         dat_coord_1 = za_rad
         dat_coord_2 = az_rad
-    model_args = (dat_coord_1, dat_coord_2, len(res))
+    model_args = (
+        dat_coord_1[::args.decimation_factor], 
+        dat_coord_2[::args.decimation_factor], 
+        len(res[::args.decimation_factor])
+    )
     model_kwargs = {
-        "data": res.real, 
+        "data": res.real[::args.decimation_factor], 
         "ortho_knots": args.ortho_knots, 
         "enforce_boresight": args.enforce_boresight
     }

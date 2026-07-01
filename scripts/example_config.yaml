@@ -21,3 +21,4 @@ jackknife_key: 224007541
 ortho_knots: false
 svi: false
 enforce_boresight: false
+decimation_factor: 25
