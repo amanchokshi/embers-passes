@@ -2,11 +2,12 @@ from pathlib import Path
 from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
     make_disk_mask, make_flat_index, make_constraint_info, inject_pivot, \
-    eval_spline
+    eval_spline, eval_spline_samples
 
 import numpy as np
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import SymLogNorm
 
 
 from pyuvdata import UVBeam
@@ -161,6 +162,8 @@ if __name__ == "__main__":
     from shutil import copy
     import random as pyrandom
     import os
+
+    from scipy.stats import binned_statistic_2d
     
     import numpyro
     numpyro.set_host_device_count(args.ndevice)
@@ -267,8 +270,12 @@ if __name__ == "__main__":
         ) = make_constraint_info(
             t_x, t_y, p, q, u0=0, v0=0, ij=knot_ij # FIXME: Hardcode zenith-pointed
         )
+        dat_coord_1 = jnp.sin(za_rad) * jnp.cos(az_rad)
+        dat_coord_2 = jnp.sin(za_rad) * jnp.sin(az_rad)
     else:
         t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
+        dat_coord_1 = za_rad
+        dat_coord_2 = az_rad
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
         arg_constraints = {
@@ -405,55 +412,155 @@ if __name__ == "__main__":
                                 obs=data)
             
     model = mixture_model if args.mix_model else vanilla_model
-    key = random.key(args.key)
-    if args.ortho_knots:
-        dat_coord_1 = jnp.sin(za_rad) * jnp.cos(az_rad)
-        dat_coord_2 = jnp.sin(za_rad) * jnp.sin(az_rad)
-    else:
-        dat_coord_1 = za_rad
-        dat_coord_2 = az_rad
-    model_args = (
-        dat_coord_1[::args.decimation_factor], 
-        dat_coord_2[::args.decimation_factor], 
-        len(res[::args.decimation_factor])
-    )
-    model_kwargs = {
-        "data": res.real[::args.decimation_factor], 
-        "ortho_knots": args.ortho_knots, 
-        "enforce_boresight": args.enforce_boresight
-    }
-    if args.svi:
-        guide = AutoDelta(model)
-        svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
-        svi_result = svi.run(
-            key, 
-            args.num_sample, 
-            *model_args, 
-            **model_kwargs
+    if not args.postprocess: # Need to do inference
+        key = random.key(args.key)
+        model_args = (
+            dat_coord_1[::args.decimation_factor], 
+            dat_coord_2[::args.decimation_factor], 
+            len(res[::args.decimation_factor])
         )
-        params = svi_result.params
-        plt.plot(svi_result.losses)
-        plt.ylabel("Loss")
-        plt.xlabel("Iteration")
-        plt.savefig(f"{outdir}/losses.pdf")
+        model_kwargs = {
+            "data": res.real[::args.decimation_factor], 
+            "ortho_knots": args.ortho_knots, 
+            "enforce_boresight": args.enforce_boresight
+        }
+        if args.svi:
+            guide = AutoDelta(model)
+            svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
+            svi_result = svi.run(
+                key, 
+                args.num_sample, 
+                *model_args, 
+                **model_kwargs
+            )
+            params = svi_result.params
+            plt.plot(svi_result.losses)
+            plt.ylabel("Loss")
+            plt.xlabel("Iteration")
+            plt.savefig(f"{outdir}/losses.pdf")
 
-        with open(f"{outdir}/svi_params.pkl", "wb") as svi_params_file:
-            pickle.dump(params, svi_params_file)
-    else:
-        kernel = NUTS(model)
-        mcmc = MCMC(
-            kernel, 
-            num_warmup=args.num_warmup, 
-            num_samples=args.num_sample, 
-            num_chains=args.ndevice
-        )
-        mcmc.run(
-            key, 
-            *model_args, 
-            **model_kwargs
-        )
-        idata = az.from_numpyro(mcmc)
-        idata.to_netcdf(f"{outdir}/mcmc_out.nc")
+            with open(f"{outdir}/svi_params.pkl", "wb") as svi_params_file:
+                pickle.dump(params, svi_params_file)
+        else:
+            kernel = NUTS(model)
+            mcmc = MCMC(
+                kernel, 
+                num_warmup=args.num_warmup, 
+                num_samples=args.num_sample, 
+                num_chains=args.ndevice
+            )
+            mcmc.run(
+                key, 
+                *model_args, 
+                **model_kwargs
+            )
+            idata = az.from_numpyro(mcmc)
+            idata.to_netcdf(f"{outdir}/mcmc_out.nc")
 
-        run_diagnostics(idata)
+            run_diagnostics(idata)
+    else: # Already have samples, make some plots
+        mean_res, xedges, yedges, bn = binned_statistic_2d(
+            dat_coord_1[::5], 
+            dat_coord_2[::5], 
+            res[::5], 
+            bins=np.linspace(-1, 1, num=101), 
+            expand_binnumbers=True
+        )
+        xcent = get_bin_cent(xedges)
+        ycent = get_bin_cent(yedges)
+        X, Y = np.meshgrid(xcent, ycent, indexing="ij")
+
+        idata = az.from_netcdf(f"{outdir}/mcmc_out.nc")
+        num_samp_total = args.num_device * args.num_sample
+        c_samps = jnp.array(idata.posterior["surf_vals"]).reshape(num_samp_total, -1)
+        coeffs_for_mod_samps = jnp.zeros([num_samp_total, n_x, n_y])
+        for k in range(num_samp_total):
+            coeffs_for_mod_samps = coeffs_for_mod_samps.at[k].set(
+                scatter_coeffs(
+                    c_samps[k],
+                    knot_mask, 
+                    knot_ij
+                )
+            )
+        spl = SphericalSpline(
+            t_x, t_y, coeffs_for_mod_samps, p , q
+        )
+
+
+        res_samples = eval_spline_samples(
+            spl, 
+            X.flatten(), 
+            Y.flatten()
+        ).reshape(
+            num_samp_total, 
+            *X.shape
+        )
+
+        
+        r_interp = np.sqrt(X**2 + Y**2)
+        za_interp = np.arcsin(r_interp)
+        az_interp = np.arctan2(Y, X) % (2 * np.pi)
+        interp_mask = r_interp <= 1.0
+
+        bm_interp = np.zeros(za_interp.shape)
+        bm_interp[interp_mask] = beam.interp(za_array=za_interp[grad_mask], az_array=az[grad_mask])[0][0, pol_ind, 0]
+        bm_interp[~interp_mask] = np.nan
+
+        # Sample beams in linear units
+        beam_samps = to_lin(res_samples) * bm_interp
+        beam_from_mean = to_lin(mean_res) * bm_interp
+
+        mean_beam = beam_samps.mean(axis=0)
+        fig, ax = plt.subplots(
+            nrow=4, sharex=True, sharey=True, figsize=(3, 12)
+        )
+        mean_im = ax[0].pcolormesh(
+            X, Y, mean_beam, cmap="plasma", vmin=0, vmax=1
+        )
+        fig.colorbar(mean_im, ax=ax[0], label="Beam Value")
+
+        mb_minus_interp = mean_beam - bm_interp
+        lin_res_im = ax[1].pcolormesh(
+            X,
+            Y,
+            mb_minus_interp,
+            cmap="spectral",
+            norm=SymLogNorm(vmin=-1, vmax=1, linthresh=1e-5)
+        )
+        fig.colorbar(lin_res_im, ax=ax[1], label="Residual Beam")
+
+        lin_z_im = ax[2].pcolormesh(
+            X,
+            Y,
+            mb_minus_interp / beam_samps.std(axis=0),
+            cmap="coolwarm",
+            vmin=-10,
+            vmax=10,
+        )
+        fig.colorbar(lin_z_im, ax=ax[2], label="Residual Beam z-score")
+
+        mean_res_post = res_samples.mean(axis=0)
+        ratio_im = ax[3].pcolormesh(
+            X, 
+            Y, 
+            mean_res_post, 
+            vmin=-30, 
+            vmax=30, 
+            cmap="coolwarm"
+        )
+        fig.colorbar(ratio_im, ax=ax[3], label="Fit Ratio (dB)")
+
+        ax[-1].set_xlabel("EW Direction Cosine")
+        for ax_ob in ax:
+            ax_ob.set_ylabel("NS Direction Cosine")
+
+        
+        fig.tight_layout()
+        fig.savefig(f"{outdir}/mean_beam_check.pdf")
+        fig.close()
+
+
+        
+
+
 

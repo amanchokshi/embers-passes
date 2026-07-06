@@ -1,0 +1,25 @@
+# === Required ===
+mwa_beamfile: /Users/mwilensky/projects/SSINS/mwa_full_embedded_element_pattern.h5
+outdir: /Users/mwilensky/projects/satellite_beams/test_outputs
+indir: /Users/mwilensky/repos/embers-passes/passes
+
+# === Optional (defaults shown) ===
+pol: XX
+tile: "06"        # Leading zero required for single digits
+rf_num: 0
+plotting: false
+num_pass: null # Use all passes
+ndevice: 4
+key: 3252434
+num_warmup: 250
+num_sample: 500
+mix_model: false
+jackknife: false
+jackknife_mode: "time" # "random" also allowed
+jackknife_half: 0
+jackknife_key: 224007541
+ortho_knots: true
+svi: false
+enforce_boresight: false
+decimation_factor: 5
+postprocess: false
