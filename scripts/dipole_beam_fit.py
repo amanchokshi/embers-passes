@@ -454,7 +454,8 @@ def main() -> None:
         "freq_hz": args.freq_hz,
         "pointing": args.pointing,
         "pol": args.pol,
-        "prior": "theta = 16 * Dirichlet(ones(16))",
+        # "prior": "theta = 16 * Dirichlet(ones(16))",
+        "prior": "theta = Truncated Gaussian, mu=1, sigma=0.2",
         "chains": 1,
         "cores": 1,
     }
@@ -487,9 +488,40 @@ def main() -> None:
         pol=args.pol,
     )
 
+    # with pm.Model() as model:
+    #     p = pm.Dirichlet("p", a=np.ones(16))
+    #     theta = pm.Deterministic("theta", 16.0 * p)
+    #
+    #     pm.Potential("beam_likelihood", loglike_op(theta))
+    #
+    #     idata = pm.sample_smc(
+    #         draws=args.draws,
+    #         chains=1,
+    #         cores=1,
+    #         random_seed=args.seed,
+    #         progressbar=False,
+    #     )
+    #
+    # with open(outdir / f"{stem}.pkl", "wb") as f:
+    #     pickle.dump(idata, f)
+    #
+    # save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
+    #
+    # idata_save = clean_datatree_for_save(idata)
+    # idata_save.to_netcdf(outdir / f"{stem}.nc")
+
     with pm.Model() as model:
-        p = pm.Dirichlet("p", a=np.ones(16))
-        theta = pm.Deterministic("theta", 16.0 * p)
+        theta = pm.TruncatedNormal(
+            "theta",
+            mu=1.0,
+            sigma=0.2,
+            lower=0.0,
+            shape=16,
+        )
+
+        theta_sum = pm.Deterministic("theta_sum", pt.sum(theta))
+        theta_mean = pm.Deterministic("theta_mean", pt.mean(theta))
+        theta_std = pm.Deterministic("theta_std", pt.std(theta))
 
         pm.Potential("beam_likelihood", loglike_op(theta))
 
