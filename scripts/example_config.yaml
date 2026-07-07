@@ -22,3 +22,5 @@ ortho_knots: false
 svi: false
 enforce_boresight: false
 decimation_factor: 25
+inference: true
+postprocess: true

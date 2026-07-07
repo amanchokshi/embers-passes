@@ -155,6 +155,33 @@ def prep_spline_params(beam, ortho_knots=False):
         Nparam = n_th * n_ph
         return t_theta, t_phi, p, q, n_th, n_ph, Nparam
 
+def plot_hist(idata, ax, param_name, to_hist, xlabel):
+    scale_samples = idata.posterior[param_name]
+    scales_to_plot = scale_samples.sel(
+            sample=np.random.choice(scale_samples.size, size=30, replace=False)
+        )
+    counts, _, _ = ax.hist(
+            to_hist,
+            histtype="step",
+            bins="auto",
+            density=True
+        )
+    mean_scale = scale_samples.mean()
+    xplot = 5 * mean_scale * np.linspace(-1, 1, num=100)
+    ax.plot(xplot, 
+            np.exp(dist.SoftLaplace(
+                loc=0, 
+                scale=scales_to_plot
+            ).log_prob(xplot).T),
+            color="tab:orange",
+            alpha=0.3)
+    
+    ax.set_yscale("log")
+    ax.set_ylim([2*np.amin(counts), 2 * np.amax(counts)])
+    ax.set_xlabel(xlabel)
+
+    return
+
 if __name__ == "__main__":
 
     import sys
@@ -328,6 +355,23 @@ if __name__ == "__main__":
         with numpyro.plate("Nparam", Nparam): # Need to enforce peak-normalization
             surf_vals = numpyro.sample("surf_vals",
                                        dist.SoftLaplace(loc=0, scale=scale_vals))
+        spl, grad = get_spl_grad(ortho_knots, enforce_boresight, surf_vals)
+        model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
+        if add_noise_bias:
+            model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
+        
+        
+        lp1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
+        lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
+        numpyro.factor("grad_pot", lp1 + lp2)
+        
+        
+        with numpyro.plate("Ndat", Ndat):
+            obs = numpyro.sample("obs",
+                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
+                                obs=data)
+
+    def get_spl_grad(ortho_knots, enforce_boresight, surf_vals):
         if enforce_boresight:
             # Hardcoded 0 since log-beam 0 at peak
             surf_vals_model = inject_pivot(
@@ -344,30 +388,13 @@ if __name__ == "__main__":
         if ortho_knots:
             surf_vals_model = scatter_coeffs(surf_vals_model, knot_mask, knot_ij)
             spl = SphericalSpline(t_x, t_y, surf_vals_model, p, q)
-            #model_for_grad = eval_spline_batch(spl, Xgrad.flatten(), Ygrad.flatten())
-            #grad = jnp.gradient(model_for_grad.reshape(100, 100))
-            #grad = (grad[0][grad_mask], grad[1][grad_mask])
+
             grad = jnp.gradient(surf_vals_model)
             grad = (grad[0][knot_mask], grad[1][knot_mask])
-            # Knots unevenly spaced, use autodiff
-            #grad = jax.vmap(jax.grad(lambda x, y: eval_spline(spl, x, y)))(Xgrad, Ygrad)
         else:
             spl = SphericalSpline(t_theta, t_phi, surf_vals_model.reshape(n_th, n_ph), p, q)
             grad = jnp.gradient(surf_vals_model.reshape(n_th, n_ph))
-        model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
-        if add_noise_bias:
-            model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
-        
-        
-        lp1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
-        lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
-        numpyro.factor("grad_pot", lp1 + lp2)
-        
-        
-        with numpyro.plate("Ndat", Ndat):
-            obs = numpyro.sample("obs",
-                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
-                                obs=data)
+        return spl,grad
             
     def mixture_model(za_data, az_data, Ndat, data=None):
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
@@ -412,7 +439,7 @@ if __name__ == "__main__":
                                 obs=data)
             
     model = mixture_model if args.mix_model else vanilla_model
-    if not args.postprocess: # Need to do inference
+    if args.inference: # Need to do inference
         key = random.key(args.key)
         model_args = (
             dat_coord_1[::args.decimation_factor], 
@@ -458,7 +485,7 @@ if __name__ == "__main__":
             idata.to_netcdf(f"{outdir}/mcmc_out.nc")
 
             run_diagnostics(idata)
-    else: # Already have samples, make some plots
+    if args.postprocess: # Already have samples, make some plots
         mean_res, xedges, yedges, bn = binned_statistic_2d(
             dat_coord_1[::5], 
             dat_coord_2[::5], 
@@ -556,8 +583,47 @@ if __name__ == "__main__":
 
         
         fig.tight_layout()
-        fig.savefig(f"{outdir}/mean_beam_check.pdf")
+        fig.savefig(f"{outdir}/mean_beam_check.pdf", bbox_inches="tight")
         fig.close()
+
+        # Compare to inferred distributions using the scale parameters
+        fig, ax = plt.subplots(nrows=3, figsize=(6, 4))
+        # Look at inferred coefficient distributions
+        mean_surf_vals = jnp.array(idata.posterior["surf_vals"]).mean(axis=(0,1))
+        plot_hist(
+            idata, 
+            ax[0], 
+            "scale_vals",
+            mean_surf_vals,
+            "Coefficient Values"
+        )
+        mean_spl, mean_grad = get_spl_grad(
+            args.ortho_knots,
+            args.enforce_boresight,
+            mean_surf_vals
+        )
+        plot_hist(
+            idata, 
+            ax[1], 
+            "scale_grad",
+            jnp.concatenate(mean_grad, axis=0).flatten(),
+            "Coefficient Finite Differences"
+        )
+        mean_mod_for_data = eval_spline_batch(mean_spl, dat_coord_1, dat_coord_2)
+        plot_hist(
+            idata, 
+            ax[2], 
+            "scale_noise",
+            res.real[::args.decimation_factor] - mean_mod_for_data,
+            "Data Residuals"
+        )
+
+
+        # Compare to 10 random passes
+
+        # 10 random linear beam samples
+
+        # Slice plots
 
 
         
