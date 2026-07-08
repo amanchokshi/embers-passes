@@ -489,6 +489,9 @@ if __name__ == "__main__":
 
             run_diagnostics(idata)
     if args.postprocess: # Already have samples, make some plots
+        plotdir = f"{outdir}/plots"
+        if not os.path.exists(plotdir):
+            os.makedirs(plotdir)
         mean_res, xedges, yedges, bn = binned_statistic_2d(
             dat_coord_1[::5], 
             dat_coord_2[::5], 
@@ -590,7 +593,7 @@ if __name__ == "__main__":
 
         
         fig.tight_layout()
-        fig.savefig(f"{outdir}/mean_beam_check.pdf", bbox_inches="tight")
+        fig.savefig(f"{plotdir}/mean_beam_check.pdf", bbox_inches="tight")
         plt.close(fig)
 
         # Compare to inferred distributions using the scale parameters
@@ -627,12 +630,12 @@ if __name__ == "__main__":
             model_kwargs["data"] - mean_mod_for_data,
             "Data Residuals"
         )
-        fig.savefig(f"{outdir}/dist_plot.pdf")
+        fig.savefig(f"{plotdir}/dist_plot.pdf")
         plt.close(fig)
 
         # Compare to 10 random passes
         # FIXME: hardcode db_cut
-        fig, ax = plt.subplots()
+        fig, ax = plt.subplots(figsize=(12, 9))
         spl_for_passes = SphericalSpline(
             t_x, t_y, coeffs_for_mod_samps[::num_samp_total//30], p , q
         )
@@ -642,27 +645,39 @@ if __name__ == "__main__":
         pass_boundaries = np.append(0, pass_boundaries)
         pass_inds = np.random.choice(len(lengths) - 1, 10, replace=False)
         xstart = 0
+        noise_scale = idata.posterior["scale_noise"].mean().values
         for trial_ind, pass_ind in enumerate(pass_inds):
             pass_slc = slice(
-                pass_boundaries[pass_ind], 
-                pass_boundaries[pass_ind + 1]
+                pass_boundaries[pass_ind] // args.decimation_factor, 
+                pass_boundaries[pass_ind + 1] // args.decimation_factor
             )
-            xvals = np.arange(xstart, xstart + lengths[pass_ind])
-            xstart += lengths[pass_ind]
+            length = pass_slc.stop - pass_slc.start
+            xvals = np.arange(xstart, xstart + length)
+            xstart += length
             ax.plot(
                 xvals,
-                res.real[pass_slc], marker=".", linestyle="none", color=f"C{trial_ind}"
+                model_kwargs["data"][pass_slc], marker=".", linestyle="none", color=f"C{trial_ind}"
             )
 
             pass_mod = eval_spline_samples(
                 spl_for_passes,
-                dat_coord_1[pass_slc],
-                dat_coord_2[pass_slc]
+                model_args[0][pass_slc],
+                model_args[1][pass_slc]
             )
 
-            ax.plot(xvals, pass_mod.T, color=f"C{trial_ind}", alpha=0.2)
-        ax.set_ylabel("Residual (dB)")
+            ax.plot(xvals, pass_mod.T, color=f"C{trial_ind}", alpha=0.1)
+            mean_pass_mod = pass_mod.mean(axis=0)
+            ax.fill_between(
+                xvals, 
+                mean_pass_mod - noise_scale,
+                mean_pass_mod + noise_scale,
+                color=f"C{trial_ind}",
+                alpha=0.5
+            )
+        ax.set_ylabel("Ratio (dB)")
         ax.set_xlabel("Time Index")
+        ax.set_title("10 Random Passes")
+        fig.savefig(f"{plotdir}/pass_plot.pdf")
 
         # 10 random linear beam samples
 
