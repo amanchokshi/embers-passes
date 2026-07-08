@@ -628,6 +628,7 @@ if __name__ == "__main__":
             "Data Residuals"
         )
         fig.savefig(f"{outdir}/dist_plot.pdf")
+        plt.close(fig)
 
         # Compare to 10 random passes
 
