@@ -631,6 +631,38 @@ if __name__ == "__main__":
         plt.close(fig)
 
         # Compare to 10 random passes
+        # FIXME: hardcode db_cut
+        fig, ax = plt.subplots()
+        spl_for_passes = SphericalSpline(
+            t_x, t_y, coeffs_for_mod_samps[::num_samp_total//30], p , q
+        )
+        
+        lengths = [len(p.power_db) for p in passes if np.amax(p.power_db) < 3]
+        pass_boundaries = np.cumsum(lengths)
+        pass_boundaries = np.append(0, pass_boundaries)
+        pass_inds = np.random.choice(len(lengths) - 1, 10, replace=False)
+        xstart = 0
+        for trial_ind, pass_ind in enumerate(pass_inds):
+            pass_slc = slice(
+                pass_boundaries[pass_ind], 
+                pass_boundaries[pass_ind + 1]
+            )
+            xvals = np.arange(xstart, xstart + lengths[pass_ind])
+            xstart += lengths[pass_ind]
+            ax.plot(
+                xvals,
+                res.real[pass_slc], marker=".", linestyle="none", color=f"C{trial_ind}"
+            )
+
+            pass_mod = eval_spline_samples(
+                spl_for_passes,
+                dat_coord_1[pass_slc],
+                dat_coord_2[pass_slc]
+            )
+
+            ax.plot(xvals, pass_mod.T, color=f"C{trial_ind}", alpha=0.2)
+        ax.set_ylabel("Residual (dB)")
+        ax.set_xlabel("Time Index")
 
         # 10 random linear beam samples
 
