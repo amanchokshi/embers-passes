@@ -157,27 +157,30 @@ def prep_spline_params(beam, ortho_knots=False):
 
 def plot_hist(idata, ax, param_name, to_hist, xlabel):
     scale_samples = idata.posterior[param_name]
-    scales_to_plot = scale_samples.sel(
-            sample=np.random.choice(scale_samples.size, size=30, replace=False)
-        )
+    scales_to_plot = az.extract(
+        idata,
+        combined=True,
+        var_names=param_name,
+        num_samples=30,
+    )
     counts, _, _ = ax.hist(
             to_hist,
             histtype="step",
             bins="auto",
             density=True
         )
-    mean_scale = scale_samples.mean()
-    xplot = 5 * mean_scale * np.linspace(-1, 1, num=100)
+    mean_scale = scale_samples.mean().values
+    xplot = 10 * mean_scale * np.linspace(-1, 1, num=100)
     ax.plot(xplot, 
             np.exp(dist.SoftLaplace(
                 loc=0, 
-                scale=scales_to_plot
-            ).log_prob(xplot).T),
+                scale=jnp.array(scales_to_plot)[None, :]
+            ).log_prob(xplot[:, None])),
             color="tab:orange",
-            alpha=0.3)
+            alpha=0.1)
     
     ax.set_yscale("log")
-    ax.set_ylim([2*np.amin(counts), 2 * np.amax(counts)])
+    ax.set_ylim([0.5*np.amin(counts[counts > 0]), 2 * np.amax(counts)])
     ax.set_xlabel(xlabel)
 
     return
@@ -201,9 +204,9 @@ if __name__ == "__main__":
     from jax import random
     import jax.numpy as jnp
     import jax
-    jax.config.update("jax_debug_nans", True)
+    #jax.config.update("jax_debug_nans", True)
 
-    import arviz_base as az
+    import arviz as az
 
     # FIXME: Hardcode -- only zenith
     delays = np.zeros(16, dtype=int)
@@ -439,18 +442,18 @@ if __name__ == "__main__":
                                 obs=data)
             
     model = mixture_model if args.mix_model else vanilla_model
+    model_args = (
+        dat_coord_1[::args.decimation_factor], 
+        dat_coord_2[::args.decimation_factor], 
+        len(res[::args.decimation_factor])
+    )
+    model_kwargs = {
+        "data": res.real[::args.decimation_factor], 
+        "ortho_knots": args.ortho_knots, 
+        "enforce_boresight": args.enforce_boresight
+    }
     if args.inference: # Need to do inference
         key = random.key(args.key)
-        model_args = (
-            dat_coord_1[::args.decimation_factor], 
-            dat_coord_2[::args.decimation_factor], 
-            len(res[::args.decimation_factor])
-        )
-        model_kwargs = {
-            "data": res.real[::args.decimation_factor], 
-            "ortho_knots": args.ortho_knots, 
-            "enforce_boresight": args.enforce_boresight
-        }
         if args.svi:
             guide = AutoDelta(model)
             svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
@@ -498,7 +501,7 @@ if __name__ == "__main__":
         X, Y = np.meshgrid(xcent, ycent, indexing="ij")
 
         idata = az.from_netcdf(f"{outdir}/mcmc_out.nc")
-        num_samp_total = args.num_device * args.num_sample
+        num_samp_total = args.ndevice * args.num_sample
         c_samps = jnp.array(idata.posterior["surf_vals"]).reshape(num_samp_total, -1)
         coeffs_for_mod_samps = jnp.zeros([num_samp_total, n_x, n_y])
         for k in range(num_samp_total):
@@ -530,7 +533,10 @@ if __name__ == "__main__":
         interp_mask = r_interp <= 1.0
 
         bm_interp = np.zeros(za_interp.shape)
-        bm_interp[interp_mask] = beam.interp(za_array=za_interp[grad_mask], az_array=az[grad_mask])[0][0, pol_ind, 0]
+        bm_interp[interp_mask] = beam.interp(
+            za_array=za_interp[interp_mask], 
+            az_array=az_interp[interp_mask]
+        )[0][0, pol_ind, 0]
         bm_interp[~interp_mask] = np.nan
 
         # Sample beams in linear units
@@ -539,7 +545,7 @@ if __name__ == "__main__":
 
         mean_beam = beam_samps.mean(axis=0)
         fig, ax = plt.subplots(
-            nrow=4, sharex=True, sharey=True, figsize=(3, 12)
+            nrows=4, sharex=True, sharey=True, figsize=(6, 12)
         )
         mean_im = ax[0].pcolormesh(
             X, Y, mean_beam, cmap="plasma", vmin=0, vmax=1
@@ -551,8 +557,8 @@ if __name__ == "__main__":
             X,
             Y,
             mb_minus_interp,
-            cmap="spectral",
-            norm=SymLogNorm(vmin=-1, vmax=1, linthresh=1e-5)
+            cmap="Spectral",
+            norm=SymLogNorm(vmin=-1, vmax=1, linthresh=1e-3)
         )
         fig.colorbar(lin_res_im, ax=ax[1], label="Residual Beam")
 
@@ -561,18 +567,19 @@ if __name__ == "__main__":
             Y,
             mb_minus_interp / beam_samps.std(axis=0),
             cmap="coolwarm",
-            vmin=-10,
-            vmax=10,
+            vmin=-30,
+            vmax=30,
         )
         fig.colorbar(lin_z_im, ax=ax[2], label="Residual Beam z-score")
 
         mean_res_post = res_samples.mean(axis=0)
+        mean_res_post = mean_res_post.at[~interp_mask].set(jnp.nan)
         ratio_im = ax[3].pcolormesh(
             X, 
             Y, 
             mean_res_post, 
-            vmin=-30, 
-            vmax=30, 
+            vmin=-25, 
+            vmax=25, 
             cmap="coolwarm"
         )
         fig.colorbar(ratio_im, ax=ax[3], label="Fit Ratio (dB)")
@@ -584,7 +591,7 @@ if __name__ == "__main__":
         
         fig.tight_layout()
         fig.savefig(f"{outdir}/mean_beam_check.pdf", bbox_inches="tight")
-        fig.close()
+        plt.close(fig)
 
         # Compare to inferred distributions using the scale parameters
         fig, ax = plt.subplots(nrows=3, figsize=(6, 4))
@@ -609,15 +616,18 @@ if __name__ == "__main__":
             jnp.concatenate(mean_grad, axis=0).flatten(),
             "Coefficient Finite Differences"
         )
-        mean_mod_for_data = eval_spline_batch(mean_spl, dat_coord_1, dat_coord_2)
+        mean_mod_for_data = eval_spline_batch(
+            mean_spl, 
+            *model_args[:2]
+        )
         plot_hist(
             idata, 
             ax[2], 
             "scale_noise",
-            res.real[::args.decimation_factor] - mean_mod_for_data,
+            model_kwargs["data"] - mean_mod_for_data,
             "Data Residuals"
         )
-
+        fig.savefig(f"{outdir}/dist_plot.pdf")
 
         # Compare to 10 random passes
 
