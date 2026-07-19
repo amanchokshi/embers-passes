@@ -12,8 +12,8 @@ Each entry is a calibrated satellite pass tracing a 1D slice through the MWA bea
 ## Installation
 
 > [!CAUTION]
-> This repository contains ~2.3 GB of satellite pass data.
-> A full clone will download ~1.4 GB and expand to ~3–4 GB on disk.
+> This repository contains ~5 GB of satellite pass data.
+> A full clone will download ~3 GB and expand to over 6 GB on disk.
 
 ```bash
 git clone https://github.com/amanchokshi/embers-passes.git
