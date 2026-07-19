@@ -3,7 +3,7 @@
 #SBATCH --job-name='extract-passes'
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=32
-#SBATCH --time=0:16:00
+#SBATCH --time=0:20:00
 #SBATCH --account=oz048
 #SBATCH --mem=4gb
 #SBATCH --output=extract_passes-%A.out
@@ -28,6 +28,7 @@ echo "Container: ${CONTAINER}"
 apptainer exec \
     -B /fred:/fred \
     "${CONTAINER}" \
-    python extract_tile_passes.py
+    python extract_tile_passes_monotonic.py
+    # python extract_tile_passes.py
 
 echo "Job finished at: $(date)"
