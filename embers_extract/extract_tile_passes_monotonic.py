@@ -6,11 +6,12 @@ from pathlib import Path
 import h5py
 import healpy as hp
 import numpy as np
+from scipy.stats import beta
+
 from embers.rf_tools.rf_data import tile_names
 from embers.sat_utils.sat_channels import time_tree
 from embers.tile_maps import tile_maps
 from embers.tile_maps.beam_utils import chisq_fit_test, rotate_map
-from scipy.stats import beta
 
 
 def get_Imatr(x, Nc=10):
@@ -549,12 +550,12 @@ if __name__ == "__main__":
         pow_thresh=5,
         ref_model="./embers_out/tile_maps/ref_models/ref_dipole_models.npz",
         fee_map="./embers_out/mwa_utils/mwa_fee/mwa_fee_beam.npz",
-        rfe_cali="./embers_out/tile_maps/rfe_calibration/rfe_gain_fit.npy",
+        rfe_cali="./embers_out/tile_maps/rfe_calibration/20260714/rfe_compression_monotonic_concave_fits.json",
         obs_point_json="./embers_out/mwa_utils/obs_pointings.json",
         align_dir="./embers_out/rf_tools/align_data",
         chrono_dir="./embers_out/sat_utils/ephem_chrono",
         chan_map_dir="./embers_out//sat_utils/sat_channels/window_maps",
-        out_dir="./embers_out/tile_maps/passes",
+        out_dir="./embers_out/tile_maps/passes_concave_monotonic",
         rfe_cali_bool=True,
         max_cores=None,
     )
