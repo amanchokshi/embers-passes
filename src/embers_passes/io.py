@@ -23,6 +23,7 @@ class PassRecord:
     alt_deg: np.ndarray
     az_deg: np.ndarray
     power_db: np.ndarray
+    cal_db: np.ndarray
 
     def __repr__(self) -> str:
         return (
@@ -72,6 +73,11 @@ class PassFile:
         pass_id: str,
     ) -> PassRecord:
         """Construct a PassRecord from a single pass group."""
+        if "rfe_correction_db" in grp.keys():
+            cal_db = np.asarray(grp["rfe_correction_db"])
+        else:
+            cal_db = np.full(np.asarray(grp["power_db"]).size, np.nan)
+
         return PassRecord(
             source_file=self.path,
             tile=self.tile,
@@ -84,6 +90,7 @@ class PassFile:
             alt_deg=np.asarray(grp["alt_deg"]),
             az_deg=np.asarray(grp["az_deg"]),
             power_db=np.asarray(grp["power_db"]),
+            cal_db=cal_db,
         )
 
     def iter_passes(self, pointing: int) -> Iterator[PassRecord]:
