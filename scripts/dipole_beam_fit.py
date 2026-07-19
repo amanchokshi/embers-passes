@@ -18,6 +18,72 @@ from scipy.stats import median_abs_deviation as mad
 from embers_passes import PassFile
 
 
+def pass_hyperbeam_model(
+    p,
+    beam,
+    freq_hz: float = 137e6,
+    delays: list[int] | None = None,
+    amps: list[float] | None = None,
+    norm_to_zenith: bool = True,
+    parallactic: bool = False,
+) -> np.ndarray:
+    """
+    Evaluate the MWA hyperbeam model along a single pass.
+
+    Parameters
+    ----------
+    p : PassRecord
+        Pass record with alt_deg and az_deg arrays.
+    beam : mwa_hyperbeam.FEEBeam
+        Hyperbeam beam object.
+    freq_hz : float, optional
+        Frequency in Hz.
+    delays : list[int], optional
+        Beamformer delays.
+    amps : list[float], optional
+        Dipole amplitudes.
+    norm_to_zenith : bool, optional
+        Whether to normalize to zenith.
+    parallactic : bool, optional
+        Whether to include parallactic rotation.
+
+    Returns
+    -------
+    np.ndarray
+        Beam model in dB sampled at the pass coordinates.
+    """
+    if delays is None:
+        delays = [0] * 16
+    if amps is None:
+        amps = [1.0] * 16
+
+    az = np.radians(np.asarray(p.az_deg, dtype=float))
+    za = np.radians(90.0 - np.asarray(p.alt_deg, dtype=float))
+
+    jones = beam.calc_jones_array(
+        az,
+        za,
+        freq_hz,
+        delays,
+        amps,
+        norm_to_zenith,
+        parallactic,
+    )
+
+    unpol_beam = make_unpol_instrumental_response(jones, jones)
+
+    pol = p.tile[-2:]  # "XX" or "YY"
+
+    if pol == "XX":
+        model = 10.0 * np.log10(np.real(unpol_beam[:, 0]))
+    elif pol == "YY":
+        model = 10.0 * np.log10(np.real(unpol_beam[:, 3]))
+    else:
+        raise ValueError(f"Could not infer polarization from tile name: {p.tile}")
+
+    return model
+
+
 def passes_to_healpix(
     passes,
     nside: int = 32,
@@ -86,6 +152,140 @@ def passes_to_healpix(
             mad_map[pix_i] = mad(values, scale="normal")
 
     return hp_map, counts, mad_map
+
+
+def passes_to_healpix_concave_monotonic(
+    passes,
+    beam_file: str | Path,
+    mwa_model_threshold_db: float = -10.0,
+    residual_thresh: float = 2.0,
+    nside: int = 32,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Bin monotonic-concave calibrated pass samples onto a HEALPix map.
+
+    Samples from accepted satellite passes are assigned to HEALPix pixels
+    using their altitude and azimuth coordinates. The output power map contains
+    the median of all samples contributing to each pixel.
+
+    Passes with a non-zero RFE calibration correction are compared with the
+    MWA FEE beam model. A pass is rejected when its measured power exceeds the
+    model by more than ``residual_thresh`` within the region where the model
+    response is greater than ``mwa_model_threshold_db``.
+
+    Parameters
+    ----------
+    passes
+        Iterable of satellite-pass records. Each record must provide
+        ``alt_deg``, ``az_deg``, ``power_db``, and ``cal_db`` attributes and
+        must be compatible with :func:`pass_hyperbeam_model`.
+    mwa_model_threshold_db
+        Minimum MWA model response used when testing calibrated passes, in dB
+        relative to the beam maximum. Default is -10 dB.
+    residual_thresh
+        Maximum permitted positive residual between the measured power and
+        MWA beam model within the selected model region, in dB. Default is
+        2 dB.
+    nside
+        HEALPix NSIDE parameter controlling the angular resolution. Default
+        is 32.
+
+    Returns
+    -------
+    power_map
+        HEALPix map containing the median power per pixel in dB. Pixels with
+        no contributing samples are NaN.
+    count_map
+        Number of samples contributing to each pixel.
+    mad_map
+        HEALPix map containing the median absolute deviation of the power
+        samples in each pixel. Pixels with no contributing samples are NaN.
+
+    Notes
+    -----
+    The residual threshold is one-sided: passes are rejected only when the
+    measured power lies more than ``residual_thresh`` above the MWA model.
+
+    The median absolute deviation is scaled using ``scale="normal"`` so that
+    it estimates the equivalent Gaussian standard deviation.
+    """
+    npix = hp.nside2npix(nside)
+    beam = mwa_hyperbeam.FEEBeam(str(beam_file))
+
+    values_by_pixel: list[list[float]] = [[] for _ in range(npix)]
+
+    for pass_record in passes:
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
+        calibration_db = np.asarray(pass_record.cal_db, dtype=float)
+
+        mwa_model_db = np.asarray(
+            pass_hyperbeam_model(pass_record, beam),
+            dtype=float,
+        )
+
+        if not (
+            alt_deg.shape
+            == az_deg.shape
+            == power_db.shape
+            == calibration_db.shape
+            == mwa_model_db.shape
+        ):
+            raise ValueError(
+                "Pass altitude, azimuth, power, calibration, and model "
+                "arrays must have matching shapes."
+            )
+
+        finite = (
+            np.isfinite(alt_deg)
+            & np.isfinite(az_deg)
+            & np.isfinite(power_db)
+            & np.isfinite(calibration_db)
+            & np.isfinite(mwa_model_db)
+        )
+
+        if not np.any(finite):
+            continue
+
+        alt_deg = alt_deg[finite]
+        az_deg = az_deg[finite]
+        power_db = power_db[finite]
+        calibration_db = calibration_db[finite]
+        mwa_model_db = mwa_model_db[finite]
+
+        calibration_applied = np.any(calibration_db > 0.0)
+
+        if calibration_applied:
+            model_region = mwa_model_db > mwa_model_threshold_db
+
+            if np.any(model_region):
+                residual_db = power_db[model_region] - mwa_model_db[model_region]
+
+                if np.max(residual_db) > residual_thresh:
+                    continue
+
+        theta = np.radians(90.0 - alt_deg)
+        phi = np.radians(az_deg)
+        pixels = hp.ang2pix(nside, theta, phi)
+
+        for pixel, value in zip(pixels, power_db, strict=False):
+            values_by_pixel[pixel].append(float(value))
+
+    power_map = np.full(npix, np.nan, dtype=float)
+    mad_map = np.full(npix, np.nan, dtype=float)
+    count_map = np.zeros(npix, dtype=int)
+
+    for pixel, values in enumerate(values_by_pixel):
+        if not values:
+            continue
+
+        pixel_values = np.asarray(values, dtype=float)
+
+        count_map[pixel] = pixel_values.size
+        power_map[pixel] = np.median(pixel_values)
+        mad_map[pixel] = mad(pixel_values, scale="normal")
+
+    return power_map, count_map, mad_map
 
 
 def make_unpol_instrumental_response(j1: np.ndarray, j2: np.ndarray) -> np.ndarray:
@@ -346,6 +546,7 @@ def save_smc_stats(idata, path: Path) -> None:
 
 def build_fit_data(
     pass_file: str | Path,
+    beam_file: str | Path,
     pointing: int,
     nside: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -383,7 +584,10 @@ def build_fit_data(
     pf = PassFile(pass_file)
     passes = pf.read_passes(pointing=pointing)
 
-    data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
+    # data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
+    data_map, count_map, mad_map = passes_to_healpix_concave_monotonic(
+        passes, beam_file=beam_file, nside=nside
+    )
 
     npix = hp.nside2npix(nside)
     above_horizon = np.arange(npix // 2)
@@ -455,25 +659,21 @@ def main() -> None:
         "pointing": args.pointing,
         "pol": args.pol,
         # "prior": "theta = 16 * Dirichlet(ones(16))",
-        "prior": "theta = Truncated Gaussian, mu=1, sigma=0.2",
+        "prior": "theta = Truncated Gaussian, mu=1, sigma=0.3",
         "chains": 1,
         "cores": 1,
     }
 
     pass_stem = Path(args.pass_file).stem
 
-    stem = (
-        f"{pass_stem[:11]}"
-        f"_{metadata['pointing']}"
-        f"_S{args.seed}"
-        f"_D{args.draws}"
-    )
+    stem = f"{pass_stem[:11]}_{metadata['pointing']}_S{args.seed}_D{args.draws}"
 
     with open(outdir / f"{stem}_metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
     data_db, sigma_db, fit_mask, _, _ = build_fit_data(
         pass_file=args.pass_file,
+        beam_file=args.beam_file,
         pointing=args.pointing,
         nside=args.nside,
     )
@@ -514,7 +714,7 @@ def main() -> None:
         theta = pm.TruncatedNormal(
             "theta",
             mu=1.0,
-            sigma=0.2,
+            sigma=0.3,
             lower=0.0,
             shape=16,
         )
