@@ -33,7 +33,7 @@ dependencies = [
     "h5py",
     "jax",
     "matplotlib>=3",
-    "numpy>=2",
+    "numpy>=2,<2.4",
     "numpyro>=0.21",
     "pymc>=6",
     "pyyaml",
