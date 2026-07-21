@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,56 @@ from pytensor.graph.op import Op
 from scipy.stats import median_abs_deviation as mad
 
 from embers_passes import PassFile
+
+# _BEAM_CACHE: dict[str, mwa_hyperbeam.FEEBeam] = {}
+#
+#
+# def get_hyperbeam(beam_file: str) -> mwa_hyperbeam.FEEBeam:
+#     """Return a process-local cached Hyperbeam object."""
+#     beam = _BEAM_CACHE.get(beam_file)
+#
+#     if beam is None:
+#         beam = mwa_hyperbeam.FEEBeam(beam_file)
+#         _BEAM_CACHE[beam_file] = beam
+#
+#     return beam
+
+
+@dataclass
+class _BeamCacheEntry:
+    """Process-local cached Hyperbeam object."""
+
+    beam: mwa_hyperbeam.FEEBeam
+    calls: int = 0
+
+
+_BEAM_CACHE: dict[str, _BeamCacheEntry] = {}
+
+
+def _get_hyperbeam(
+    beam_file: str | Path,
+    max_calls: int = 100,
+) -> mwa_hyperbeam.FEEBeam:
+    """Return a cached FEEBeam, rebuilding it after a fixed number of calls.
+
+    The cache is module-level so that the PyTensor Op remains picklable.
+    Periodic reconstruction prevents memory growth observed when a single
+    FEEBeam instance is reused indefinitely.
+    """
+    if max_calls < 1:
+        raise ValueError("max_calls must be at least 1")
+
+    key = str(Path(beam_file).expanduser().resolve())
+    entry = _BEAM_CACHE.get(key)
+
+    if entry is None or entry.calls >= max_calls:
+        entry = _BeamCacheEntry(
+            beam=mwa_hyperbeam.FEEBeam(key),
+        )
+        _BEAM_CACHE[key] = entry
+
+    entry.calls += 1
+    return entry.beam
 
 
 def pass_hyperbeam_model(
@@ -404,28 +455,33 @@ class HyperbeamLogLike(Op):
 
     Parameters
     ----------
-    beam_file
-        Path to the Hyperbeam HDF5 beam model file.
     data_db
-        Observed beam measurements in dB.
+        Observed beam measurements in dB after applying ``fit_mask``.
     sigma_db
-        Per-pixel Gaussian uncertainties in dB.
+        Per-pixel Gaussian uncertainties in dB after applying ``fit_mask``.
     fit_mask
         Boolean mask selecting valid above-horizon pixels.
+    beam_file
+        Path to the Hyperbeam HDF5 beam model file.
     nside
         HEALPix NSIDE parameter used for beam evaluation.
     freq_hz
         Frequency at which the beam is evaluated in Hz.
     pol
         Polarization to fit. Must be either ``"xx"`` or ``"yy"``.
+    delays
+        Beamformer delays supplied to Hyperbeam.
+    beam_cache_calls
+        Number of likelihood evaluations for which a cached ``FEEBeam``
+        instance is reused before reconstruction.
 
     Notes
     -----
     This class wraps a black-box likelihood based on the Hyperbeam Rust
-    library. Since Hyperbeam is not differentiable within PyTensor/JAX, the
+    library. Since Hyperbeam is not differentiable within PyTensor, the
     likelihood is evaluated directly inside ``perform``.
 
-    The likelihood assumes independent Gaussian errors
+    The likelihood assumes independent Gaussian errors.
     """
 
     itypes = [pt.dvector]
@@ -433,21 +489,29 @@ class HyperbeamLogLike(Op):
 
     def __init__(
         self,
-        beam_file: str | Path,
         data_db: np.ndarray,
         sigma_db: np.ndarray,
         fit_mask: np.ndarray,
-        nside: int = 32,
-        freq_hz: float = 137e6,
-        pol: str = "xx",
+        beam_file: str | Path,
+        nside: int,
+        freq_hz: float,
+        pol: str,
+        delays: list[int] | None = None,
+        beam_cache_calls: int = 100,
     ) -> None:
-        self.beam_file = str(beam_file)
-        self.data_db = np.asarray(data_db, dtype=float)
-        self.sigma_db = np.asarray(sigma_db, dtype=float)
+        self.data_db = np.asarray(data_db, dtype=np.float64)
+        self.sigma_db = np.asarray(sigma_db, dtype=np.float64)
         self.fit_mask = np.asarray(fit_mask, dtype=bool)
+
+        self.beam_file = str(Path(beam_file).expanduser().resolve())
         self.nside = int(nside)
         self.freq_hz = float(freq_hz)
         self.pol = pol.lower()
+        self.delays = delays
+        self.beam_cache_calls = int(beam_cache_calls)
+
+        if self.beam_cache_calls < 1:
+            raise ValueError("beam_cache_calls must be at least 1.")
 
         if self.pol not in {"xx", "yy"}:
             raise ValueError("pol must be either 'xx' or 'yy'.")
@@ -458,29 +522,40 @@ class HyperbeamLogLike(Op):
                 f"Got {self.data_db.shape} and {self.sigma_db.shape}."
             )
 
-    def perform(self, node: Any, inputs: list[np.ndarray], outputs: list[Any]) -> None:
+        self.pol_idx = 0 if self.pol == "xx" else 1
+
+    def perform(
+        self,
+        node: Any,
+        inputs: list[np.ndarray],
+        outputs: list[Any],
+    ) -> None:
         """Evaluate the Gaussian log-likelihood."""
-        beam = mwa_hyperbeam.FEEBeam(self.beam_file)
+        del node
 
         (theta,) = inputs
+
+        beam = _get_hyperbeam(
+            self.beam_file,
+            max_calls=self.beam_cache_calls,
+        )
 
         model = hyperbeam_healpix(
             beam,
             nside=self.nside,
             freq_hz=self.freq_hz,
+            delays=self.delays,
             amps=theta,
         )
 
-        pol_idx = 0 if self.pol == "xx" else 1
-        model_db = model[:, pol_idx][self.fit_mask]
-
+        model_db = model[self.fit_mask, self.pol_idx]
         resid = self.data_db - model_db
 
         loglike = -0.5 * np.sum(
             (resid / self.sigma_db) ** 2 + np.log(2.0 * np.pi * self.sigma_db**2)
         )
 
-        outputs[0][0] = np.asarray(loglike, dtype=float)
+        outputs[0][0] = np.asarray(loglike, dtype=np.float64)
 
 
 def clean_datatree_for_save(dt):
@@ -679,13 +754,14 @@ def main() -> None:
     )
 
     loglike_op = HyperbeamLogLike(
-        beam_file=args.beam_file,
         data_db=data_db,
         sigma_db=sigma_db,
         fit_mask=fit_mask,
+        beam_file=args.beam_file,
         nside=args.nside,
         freq_hz=args.freq_hz,
         pol=args.pol,
+        beam_cache_calls=1024,
     )
 
     # with pm.Model() as model:
