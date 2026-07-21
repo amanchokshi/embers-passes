@@ -86,12 +86,14 @@ def write_configs(
 
     for param_tuple in itertools.product(*product_args):
         key = random.randint(0, JAX_KEY_MAX)
+        pass_plot_seed = random.randint(0, JAX_KEY_MAX) # Same max for numpy
         tile, pol = param_tuple[:2]
         config = {
             **base_config,
             "tile": tile,
             "pol": pol,
             "key": key,
+            "pass_plot_seed": pass_plot_seed
         }
         filename = f"{outdir}/config_tile{tile}_{pol}"
         if jackknives is not None:
