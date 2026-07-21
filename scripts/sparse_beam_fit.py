@@ -185,6 +185,13 @@ def plot_hist(idata, ax, param_name, to_hist, xlabel):
 
     return
 
+def plot_beam_slices(ax, slices, mean_res_slc, xcent, bm_interp_slc):
+    ax.plot(xcent, slices, color="tab:blue", alpha=0.5, label="Beam Samples")
+    ax.plot(xcent, to_lin(mean_res_slc) * bm_interp_slc, color="tab:orange", label="Averaged Pass Data")
+    ax.plot(xcent, bm_interp_slc, color="black", linestyle="--", label="Simulated Beam")
+
+    return
+
 if __name__ == "__main__":
 
     import sys
@@ -643,6 +650,7 @@ if __name__ == "__main__":
         lengths = [len(p.power_db) for p in passes if np.amax(p.power_db) < 3]
         pass_boundaries = np.cumsum(lengths)
         pass_boundaries = np.append(0, pass_boundaries)
+        np.random.seed(args.pass_plot_seed)
         pass_inds = np.random.choice(len(lengths) - 1, 10, replace=False)
         xstart = 0
         noise_scale = idata.posterior["scale_noise"].mean().values
@@ -678,10 +686,33 @@ if __name__ == "__main__":
         ax.set_xlabel("Time Index")
         ax.set_title("10 Random Passes")
         fig.savefig(f"{plotdir}/pass_plot.pdf")
+        plt.close(fig)
 
         # 10 random linear beam samples
 
         # Slice plots
+        beam_samps_for_slice = beam_samps[::num_samp_total // 30]
+        fig, ax = plt.subplots(ncols=2, sharey=True)
+        Nx = len(xcent)
+        Ny = len(ycent)
+        EW_slices = beam_samps_for_slice[:, Ny // 2].T
+        mean_res_ew = mean_res[Ny // 2]
+        bm_interp_ew = bm_interp[Ny // 2]
+        plot_beam_slices(ax[0], EW_slices, mean_res_ew, xcent, bm_interp_ew)
+
+        NS_slices = beam_samps_for_slice[:, :, Nx // 2].T
+        mean_res_ns = mean_res[:, Nx // 2]
+        bm_interp_ns = bm_interp[:, Nx // 2]
+        plot_beam_slices(ax[1], NS_slices, mean_res_ns, ycent, bm_interp_ns)
+
+        ax[0].set_xlabel("EW Direction Cosine")
+        ax[1].set_xlabel("NS Direction Cosine")
+        ax[0].set_ylabel("Beam Value")
+        fig.legend()
+        
+        fig.tight_layout()
+        fig.savefig(f"{plotdir}/slice_plot.pdf")
+        plt.close(fig)
 
 
         
