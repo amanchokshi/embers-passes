@@ -647,7 +647,7 @@ if __name__ == "__main__":
             t_x, t_y, coeffs_for_mod_samps[::num_samp_total//30], p , q
         )
         
-        lengths = [len(p.power_db) for p in passes if np.amax(p.power_db) < 3]
+        lengths = [len(p.power_db) for p in passes[pass_slice] if get_pass_cond(p)]
         pass_boundaries = np.cumsum(lengths)
         pass_boundaries = np.append(0, pass_boundaries)
         np.random.seed(args.pass_plot_seed)
