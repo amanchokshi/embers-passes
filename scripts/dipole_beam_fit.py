@@ -138,71 +138,99 @@ def pass_hyperbeam_model(
 def passes_to_healpix(
     passes,
     nside: int = 32,
+    min_alt_deg: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Bin pass samples onto a HEALPix map.
+    """
+    Bin satellite-pass power samples onto a HEALPix map.
+
+    Samples from all passes are assigned to HEALPix pixels using their
+    altitude and azimuth coordinates. The output power map contains the median
+    of all finite power samples contributing to each pixel.
+
+    This function is intended for older pass data that do not contain an RFE
+    calibration correction field. No calibration-based thresholding or MWA
+    beam-model comparison is applied.
 
     Parameters
     ----------
     passes
-        Iterable of pass records. Each record must provide ``alt_deg``,
-        ``az_deg``, and ``power_db`` attributes.
+        Satellite-pass records. Each record must provide the attributes
+        ``alt_deg``, ``az_deg``, and ``power_db``.
     nside
-        HEALPix NSIDE parameter controlling angular resolution.
+        HEALPix resolution parameter. Default is 32.
+    min_alt_deg
+        Minimum altitude, in degrees, of samples to include in the HEALPix
+        map. Samples at or below this altitude are ignored. Default is 0°.
 
     Returns
     -------
-    hp_map
-        HEALPix map containing the mean power per pixel in dB.
-        Pixels with no contributing samples are NaN.
-    counts
-        Number of samples contributing to each pixel.
+    power_map
+        Median measured power in each HEALPix pixel. Pixels containing no
+        samples are set to NaN.
+    count_map
+        Number of finite samples contributing to each HEALPix pixel.
     mad_map
-        HEALPix map of the median absolute deviation of samples in each pixel.
-        Pixels with no contributing samples are NaN.
-
-    Notes
-    -----
-    The median absolute deviation is scaled using ``scale="normal"`` so that
-    it estimates the equivalent Gaussian standard deviation.
+        Median absolute deviation of the measured power in each HEALPix pixel.
+        Pixels containing no samples are set to NaN.
     """
     npix = hp.nside2npix(nside)
 
-    sums = np.zeros(npix, dtype=float)
-    counts = np.zeros(npix, dtype=int)
-    values_by_pix: list[list[float]] = [[] for _ in range(npix)]
+    power_values: list[list[float]] = [[] for _ in range(npix)]
 
-    for p in passes:
-        alt_deg = np.asarray(p.alt_deg, dtype=float)
-        az_deg = np.asarray(p.az_deg, dtype=float)
-        power_db = np.asarray(p.power_db, dtype=float)
+    for pass_record in passes:
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
 
-        mask = np.isfinite(alt_deg) & np.isfinite(az_deg) & np.isfinite(power_db)
-        if not np.any(mask):
-            continue
+        if not (
+            alt_deg.shape == az_deg.shape == power_db.shape
+        ):
+            raise ValueError(
+                "alt_deg, az_deg, and power_db must have matching shapes."
+            )
 
-        theta = np.radians(90.0 - alt_deg[mask])
-        phi = np.radians(az_deg[mask])
+        valid = (
+            np.isfinite(alt_deg)
+            & np.isfinite(az_deg)
+            & np.isfinite(power_db)
+            & (alt_deg > min_alt_deg)
+        )
 
-        pix = hp.ang2pix(nside, theta, phi)
-        vals = power_db[mask]
+        if not np.any(valid):
+            continueA
 
-        np.add.at(sums, pix, vals)
-        np.add.at(counts, pix, 1)
+        theta = np.radians(90.0 - alt_deg[valid])
+        phi = np.radians(az_deg[valid])
 
-        for pix_i, val_i in zip(pix, vals, strict=False):
-            values_by_pix[pix_i].append(val_i)
+        pixels = hp.ang2pix(
+            nside,
+            theta,
+            phi,
+        )
 
-    hp_map = np.full(npix, np.nan, dtype=float)
+        for pixel, power in zip(
+            pixels,
+            power_db[valid],
+        ):
+            power_values[pixel].append(float(power))
+
+    power_map = np.full(npix, np.nan, dtype=float)
     mad_map = np.full(npix, np.nan, dtype=float)
+    count_map = np.zeros(npix, dtype=int)
 
-    valid = counts > 0
-    hp_map[valid] = sums[valid] / counts[valid]
+    for pixel, values in enumerate(power_values):
+        count_map[pixel] = len(values)
 
-    for pix_i, values in enumerate(values_by_pix):
         if values:
-            mad_map[pix_i] = mad(values, scale="normal")
+            values = np.asarray(values, dtype=float)
+            power_map[pixel] = np.median(values)
+            mad_map[pixel] = mad(
+                values,
+                scale="normal",
+                nan_policy="omit",
+            )
 
-    return hp_map, counts, mad_map
+    return power_map, count_map, mad_map
 
 
 def passes_to_healpix_concave_monotonic(
