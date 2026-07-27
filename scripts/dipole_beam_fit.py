@@ -18,19 +18,6 @@ from scipy.stats import median_abs_deviation as mad
 
 from embers_passes import PassFile
 
-# _BEAM_CACHE: dict[str, mwa_hyperbeam.FEEBeam] = {}
-#
-#
-# def get_hyperbeam(beam_file: str) -> mwa_hyperbeam.FEEBeam:
-#     """Return a process-local cached Hyperbeam object."""
-#     beam = _BEAM_CACHE.get(beam_file)
-#
-#     if beam is None:
-#         beam = mwa_hyperbeam.FEEBeam(beam_file)
-#         _BEAM_CACHE[beam_file] = beam
-#
-#     return beam
-
 
 @dataclass
 class _BeamCacheEntry:
@@ -792,40 +779,9 @@ def main() -> None:
         beam_cache_calls=1024,
     )
 
-    # with pm.Model() as model:
-    #     p = pm.Dirichlet("p", a=np.ones(16))
-    #     theta = pm.Deterministic("theta", 16.0 * p)
-    #
-    #     pm.Potential("beam_likelihood", loglike_op(theta))
-    #
-    #     idata = pm.sample_smc(
-    #         draws=args.draws,
-    #         chains=1,
-    #         cores=1,
-    #         random_seed=args.seed,
-    #         progressbar=False,
-    #     )
-    #
-    # with open(outdir / f"{stem}.pkl", "wb") as f:
-    #     pickle.dump(idata, f)
-    #
-    # save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
-    #
-    # idata_save = clean_datatree_for_save(idata)
-    # idata_save.to_netcdf(outdir / f"{stem}.nc")
-
     with pm.Model() as model:
-        theta = pm.TruncatedNormal(
-            "theta",
-            mu=1.0,
-            sigma=0.3,
-            lower=0.0,
-            shape=16,
-        )
-
-        theta_sum = pm.Deterministic("theta_sum", pt.sum(theta))
-        theta_mean = pm.Deterministic("theta_mean", pt.mean(theta))
-        theta_std = pm.Deterministic("theta_std", pt.std(theta))
+        p = pm.Dirichlet("p", a=np.ones(16))
+        theta = pm.Deterministic("theta", 16.0 * p)
 
         pm.Potential("beam_likelihood", loglike_op(theta))
 
@@ -844,6 +800,37 @@ def main() -> None:
 
     idata_save = clean_datatree_for_save(idata)
     idata_save.to_netcdf(outdir / f"{stem}.nc")
+
+    # with pm.Model() as model:
+    #     theta = pm.TruncatedNormal(
+    #         "theta",
+    #         mu=1.0,
+    #         sigma=0.3,
+    #         lower=0.0,
+    #         shape=16,
+    #     )
+    #
+    #     theta_sum = pm.Deterministic("theta_sum", pt.sum(theta))
+    #     theta_mean = pm.Deterministic("theta_mean", pt.mean(theta))
+    #     theta_std = pm.Deterministic("theta_std", pt.std(theta))
+    #
+    #     pm.Potential("beam_likelihood", loglike_op(theta))
+    #
+    #     idata = pm.sample_smc(
+    #         draws=args.draws,
+    #         chains=1,
+    #         cores=1,
+    #         random_seed=args.seed,
+    #         progressbar=False,
+    #     )
+    #
+    # with open(outdir / f"{stem}.pkl", "wb") as f:
+    #     pickle.dump(idata, f)
+    #
+    # save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
+    #
+    # idata_save = clean_datatree_for_save(idata)
+    # idata_save.to_netcdf(outdir / f"{stem}.nc")
 
 
 if __name__ == "__main__":
