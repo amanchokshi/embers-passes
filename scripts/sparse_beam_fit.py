@@ -55,7 +55,7 @@ def get_res(az_rad, za_rad, power_db):
     return res, model_beam
 
 # Good candidate for some util functions for the module -- should get rid of global variable dependence
-def get_pass_subset(passes, slc=slice(None), db_cut=3):
+def get_pass_subset_cut(passes, slc=slice(None), db_cut=3):
     """
     Get a pass subset including the altitudes, azimuths, and power measurements in dB.
 
@@ -97,6 +97,37 @@ def stack_pass_attr(attr, passes, slc=slice(None), db_cut=3):
     filter_fn = partial(get_pass_cond, db_cut=db_cut)
     filtered_passes = filter(filter_fn, passes[slc])
     return np.concatenate([getattr(p, attr) for p in filtered_passes])
+
+def get_pass_subset(passes, ds_factor, pass_slice):
+    alt_deg = []
+    az_deg = []
+    power_db = []
+    for p in passes[pass_slice]:
+        this_pow = p.power_db
+        lenp = len(this_pow)
+        max_ind = (lenp // ds_factor) * ds_factor
+
+        this_pow = this_pow[:max_ind]
+        this_alt_deg = p.alt_deg[:max_ind]
+        this_az_deg = p.az_deg[:max_ind]
+
+        this_pow = this_pow.reshape(max_ind // ds_factor, ds_factor).mean(axis=1)
+        this_alt_deg = this_alt_deg[ds_factor//2::ds_factor]
+        this_az_deg = this_az_deg[ds_factor//2::ds_factor]
+
+        above_horizon = this_alt_deg > 0
+        this_pow = this_pow[above_horizon]
+        this_alt_deg = this_alt_deg[above_horizon]
+        this_az_deg = this_az_deg[above_horizon]
+
+        alt_deg.extend(this_alt_deg)
+        az_deg.extend(this_az_deg)
+        power_db.extend(this_pow)
+
+    alt_deg = np.array(alt_deg)
+    az_deg = np.array(az_deg)
+    power_db = np.array(power_db)
+    return alt_deg, az_deg, power_db
 
 def plot_pass_subset(alt_deg, az_deg, power_db):
     az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
@@ -277,7 +308,7 @@ if __name__ == "__main__":
             args.num_pass
         )
 
-    alt_deg, az_deg, power_db = get_pass_subset(passes, slc=pass_slice)
+    alt_deg, az_deg, power_db = get_pass_subset(passes, args.ds_factor, pass_slice)
     az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
     res, model_beam = get_res(az_rad, za_rad, power_db)
 
@@ -450,12 +481,12 @@ if __name__ == "__main__":
             
     model = mixture_model if args.mix_model else vanilla_model
     model_args = (
-        dat_coord_1[::args.decimation_factor], 
-        dat_coord_2[::args.decimation_factor], 
-        len(res[::args.decimation_factor])
+        dat_coord_1, 
+        dat_coord_2, 
+        len(res)
     )
     model_kwargs = {
-        "data": res.real[::args.decimation_factor], 
+        "data": res.real, 
         "ortho_knots": args.ortho_knots, 
         "enforce_boresight": args.enforce_boresight
     }
@@ -500,9 +531,9 @@ if __name__ == "__main__":
         if not os.path.exists(plotdir):
             os.makedirs(plotdir)
         mean_res, xedges, yedges, bn = binned_statistic_2d(
-            dat_coord_1[::5], 
-            dat_coord_2[::5], 
-            res[::5], 
+            dat_coord_1, 
+            dat_coord_2, 
+            res, 
             bins=np.linspace(-1, 1, num=101), 
             expand_binnumbers=True
         )
@@ -647,46 +678,46 @@ if __name__ == "__main__":
             t_x, t_y, coeffs_for_mod_samps[::num_samp_total//30], p , q
         )
         
-        lengths = [len(p.power_db) for p in passes[pass_slice] if get_pass_cond(p)]
-        pass_boundaries = np.cumsum(lengths)
-        pass_boundaries = np.append(0, pass_boundaries)
-        np.random.seed(args.pass_plot_seed)
-        pass_inds = np.random.choice(len(lengths) - 1, 10, replace=False)
-        xstart = 0
-        noise_scale = idata.posterior["scale_noise"].mean().values
-        for trial_ind, pass_ind in enumerate(pass_inds):
-            pass_slc = slice(
-                pass_boundaries[pass_ind] // args.decimation_factor, 
-                pass_boundaries[pass_ind + 1] // args.decimation_factor
-            )
-            length = pass_slc.stop - pass_slc.start
-            xvals = np.arange(xstart, xstart + length)
-            xstart += length
-            ax.plot(
-                xvals,
-                model_kwargs["data"][pass_slc], marker=".", linestyle="none", color=f"C{trial_ind}"
-            )
+        # lengths = [len(p.power_db) for p in passes[pass_slice] if get_pass_cond(p)]
+        # pass_boundaries = np.cumsum(lengths)
+        # pass_boundaries = np.append(0, pass_boundaries)
+        # np.random.seed(args.pass_plot_seed)
+        # pass_inds = np.random.choice(len(lengths) - 1, 10, replace=False)
+        # xstart = 0
+        # noise_scale = idata.posterior["scale_noise"].mean().values
+        # for trial_ind, pass_ind in enumerate(pass_inds):
+        #     pass_slc = slice(
+        #         pass_boundaries[pass_ind] // args.decimation_factor, 
+        #         pass_boundaries[pass_ind + 1] // args.decimation_factor
+        #     )
+        #     length = pass_slc.stop - pass_slc.start
+        #     xvals = np.arange(xstart, xstart + length)
+        #     xstart += length
+        #     ax.plot(
+        #         xvals,
+        #         model_kwargs["data"][pass_slc], marker=".", linestyle="none", color=f"C{trial_ind}"
+        #     )
 
-            pass_mod = eval_spline_samples(
-                spl_for_passes,
-                model_args[0][pass_slc],
-                model_args[1][pass_slc]
-            )
+        #     pass_mod = eval_spline_samples(
+        #         spl_for_passes,
+        #         model_args[0][pass_slc],
+        #         model_args[1][pass_slc]
+        #     )
 
-            ax.plot(xvals, pass_mod.T, color=f"C{trial_ind}", alpha=0.1)
-            mean_pass_mod = pass_mod.mean(axis=0)
-            ax.fill_between(
-                xvals, 
-                mean_pass_mod - noise_scale,
-                mean_pass_mod + noise_scale,
-                color=f"C{trial_ind}",
-                alpha=0.5
-            )
-        ax.set_ylabel("Ratio (dB)")
-        ax.set_xlabel("Time Index")
-        ax.set_title("10 Random Passes")
-        fig.savefig(f"{plotdir}/pass_plot.pdf")
-        plt.close(fig)
+        #     ax.plot(xvals, pass_mod.T, color=f"C{trial_ind}", alpha=0.1)
+        #     mean_pass_mod = pass_mod.mean(axis=0)
+        #     ax.fill_between(
+        #         xvals, 
+        #         mean_pass_mod - noise_scale,
+        #         mean_pass_mod + noise_scale,
+        #         color=f"C{trial_ind}",
+        #         alpha=0.5
+        #     )
+        # ax.set_ylabel("Ratio (dB)")
+        # ax.set_xlabel("Time Index")
+        # ax.set_title("10 Random Passes")
+        # fig.savefig(f"{plotdir}/pass_plot.pdf")
+        # plt.close(fig)
 
         # 10 random linear beam samples
 
@@ -708,7 +739,7 @@ if __name__ == "__main__":
         ax[0].set_xlabel("EW Direction Cosine")
         ax[1].set_xlabel("NS Direction Cosine")
         ax[0].set_ylabel("Beam Value")
-        fig.legend()
+        #fig.legend()
         
         fig.tight_layout()
         fig.savefig(f"{plotdir}/slice_plot.pdf")
