@@ -687,10 +687,10 @@ def build_fit_data(
     pf = PassFile(pass_file)
     passes = pf.read_passes(pointing=pointing)
 
-    # data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
-    data_map, count_map, mad_map = passes_to_healpix_concave_monotonic(
-        passes, beam_file=beam_file, nside=nside
-    )
+    data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
+    # data_map, count_map, mad_map = passes_to_healpix_concave_monotonic(
+    #     passes, beam_file=beam_file, nside=nside
+    # )
 
     npix = hp.nside2npix(nside)
     above_horizon = np.arange(npix // 2)
