@@ -18,19 +18,6 @@ from scipy.stats import median_abs_deviation as mad
 
 from embers_passes import PassFile
 
-# _BEAM_CACHE: dict[str, mwa_hyperbeam.FEEBeam] = {}
-#
-#
-# def get_hyperbeam(beam_file: str) -> mwa_hyperbeam.FEEBeam:
-#     """Return a process-local cached Hyperbeam object."""
-#     beam = _BEAM_CACHE.get(beam_file)
-#
-#     if beam is None:
-#         beam = mwa_hyperbeam.FEEBeam(beam_file)
-#         _BEAM_CACHE[beam_file] = beam
-#
-#     return beam
-
 
 @dataclass
 class _BeamCacheEntry:
@@ -138,71 +125,99 @@ def pass_hyperbeam_model(
 def passes_to_healpix(
     passes,
     nside: int = 32,
+    min_alt_deg: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Bin pass samples onto a HEALPix map.
+    """
+    Bin satellite-pass power samples onto a HEALPix map.
+
+    Samples from all passes are assigned to HEALPix pixels using their
+    altitude and azimuth coordinates. The output power map contains the median
+    of all finite power samples contributing to each pixel.
+
+    This function is intended for older pass data that do not contain an RFE
+    calibration correction field. No calibration-based thresholding or MWA
+    beam-model comparison is applied.
 
     Parameters
     ----------
     passes
-        Iterable of pass records. Each record must provide ``alt_deg``,
-        ``az_deg``, and ``power_db`` attributes.
+        Satellite-pass records. Each record must provide the attributes
+        ``alt_deg``, ``az_deg``, and ``power_db``.
     nside
-        HEALPix NSIDE parameter controlling angular resolution.
+        HEALPix resolution parameter. Default is 32.
+    min_alt_deg
+        Minimum altitude, in degrees, of samples to include in the HEALPix
+        map. Samples at or below this altitude are ignored. Default is 0°.
 
     Returns
     -------
-    hp_map
-        HEALPix map containing the mean power per pixel in dB.
-        Pixels with no contributing samples are NaN.
-    counts
-        Number of samples contributing to each pixel.
+    power_map
+        Median measured power in each HEALPix pixel. Pixels containing no
+        samples are set to NaN.
+    count_map
+        Number of finite samples contributing to each HEALPix pixel.
     mad_map
-        HEALPix map of the median absolute deviation of samples in each pixel.
-        Pixels with no contributing samples are NaN.
-
-    Notes
-    -----
-    The median absolute deviation is scaled using ``scale="normal"`` so that
-    it estimates the equivalent Gaussian standard deviation.
+        Median absolute deviation of the measured power in each HEALPix pixel.
+        Pixels containing no samples are set to NaN.
     """
     npix = hp.nside2npix(nside)
 
-    sums = np.zeros(npix, dtype=float)
-    counts = np.zeros(npix, dtype=int)
-    values_by_pix: list[list[float]] = [[] for _ in range(npix)]
+    power_values: list[list[float]] = [[] for _ in range(npix)]
 
-    for p in passes:
-        alt_deg = np.asarray(p.alt_deg, dtype=float)
-        az_deg = np.asarray(p.az_deg, dtype=float)
-        power_db = np.asarray(p.power_db, dtype=float)
+    for pass_record in passes:
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
 
-        mask = np.isfinite(alt_deg) & np.isfinite(az_deg) & np.isfinite(power_db)
-        if not np.any(mask):
-            continue
+        if not (
+            alt_deg.shape == az_deg.shape == power_db.shape
+        ):
+            raise ValueError(
+                "alt_deg, az_deg, and power_db must have matching shapes."
+            )
 
-        theta = np.radians(90.0 - alt_deg[mask])
-        phi = np.radians(az_deg[mask])
+        valid = (
+            np.isfinite(alt_deg)
+            & np.isfinite(az_deg)
+            & np.isfinite(power_db)
+            & (alt_deg > min_alt_deg)
+        )
 
-        pix = hp.ang2pix(nside, theta, phi)
-        vals = power_db[mask]
+        if not np.any(valid):
+            continueA
 
-        np.add.at(sums, pix, vals)
-        np.add.at(counts, pix, 1)
+        theta = np.radians(90.0 - alt_deg[valid])
+        phi = np.radians(az_deg[valid])
 
-        for pix_i, val_i in zip(pix, vals, strict=False):
-            values_by_pix[pix_i].append(val_i)
+        pixels = hp.ang2pix(
+            nside,
+            theta,
+            phi,
+        )
 
-    hp_map = np.full(npix, np.nan, dtype=float)
+        for pixel, power in zip(
+            pixels,
+            power_db[valid],
+        ):
+            power_values[pixel].append(float(power))
+
+    power_map = np.full(npix, np.nan, dtype=float)
     mad_map = np.full(npix, np.nan, dtype=float)
+    count_map = np.zeros(npix, dtype=int)
 
-    valid = counts > 0
-    hp_map[valid] = sums[valid] / counts[valid]
+    for pixel, values in enumerate(power_values):
+        count_map[pixel] = len(values)
 
-    for pix_i, values in enumerate(values_by_pix):
         if values:
-            mad_map[pix_i] = mad(values, scale="normal")
+            values = np.asarray(values, dtype=float)
+            power_map[pixel] = np.median(values)
+            mad_map[pixel] = mad(
+                values,
+                scale="normal",
+                nan_policy="omit",
+            )
 
-    return hp_map, counts, mad_map
+    return power_map, count_map, mad_map
 
 
 def passes_to_healpix_concave_monotonic(
@@ -659,10 +674,10 @@ def build_fit_data(
     pf = PassFile(pass_file)
     passes = pf.read_passes(pointing=pointing)
 
-    # data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
-    data_map, count_map, mad_map = passes_to_healpix_concave_monotonic(
-        passes, beam_file=beam_file, nside=nside
-    )
+    data_map, count_map, mad_map = passes_to_healpix(passes, nside=nside)
+    # data_map, count_map, mad_map = passes_to_healpix_concave_monotonic(
+    #     passes, beam_file=beam_file, nside=nside
+    # )
 
     npix = hp.nside2npix(nside)
     above_horizon = np.arange(npix // 2)
@@ -764,40 +779,9 @@ def main() -> None:
         beam_cache_calls=1024,
     )
 
-    # with pm.Model() as model:
-    #     p = pm.Dirichlet("p", a=np.ones(16))
-    #     theta = pm.Deterministic("theta", 16.0 * p)
-    #
-    #     pm.Potential("beam_likelihood", loglike_op(theta))
-    #
-    #     idata = pm.sample_smc(
-    #         draws=args.draws,
-    #         chains=1,
-    #         cores=1,
-    #         random_seed=args.seed,
-    #         progressbar=False,
-    #     )
-    #
-    # with open(outdir / f"{stem}.pkl", "wb") as f:
-    #     pickle.dump(idata, f)
-    #
-    # save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
-    #
-    # idata_save = clean_datatree_for_save(idata)
-    # idata_save.to_netcdf(outdir / f"{stem}.nc")
-
     with pm.Model() as model:
-        theta = pm.TruncatedNormal(
-            "theta",
-            mu=1.0,
-            sigma=0.3,
-            lower=0.0,
-            shape=16,
-        )
-
-        theta_sum = pm.Deterministic("theta_sum", pt.sum(theta))
-        theta_mean = pm.Deterministic("theta_mean", pt.mean(theta))
-        theta_std = pm.Deterministic("theta_std", pt.std(theta))
+        p = pm.Dirichlet("p", a=np.ones(16))
+        theta = pm.Deterministic("theta", 16.0 * p)
 
         pm.Potential("beam_likelihood", loglike_op(theta))
 
@@ -816,6 +800,37 @@ def main() -> None:
 
     idata_save = clean_datatree_for_save(idata)
     idata_save.to_netcdf(outdir / f"{stem}.nc")
+
+    # with pm.Model() as model:
+    #     theta = pm.TruncatedNormal(
+    #         "theta",
+    #         mu=1.0,
+    #         sigma=0.3,
+    #         lower=0.0,
+    #         shape=16,
+    #     )
+    #
+    #     theta_sum = pm.Deterministic("theta_sum", pt.sum(theta))
+    #     theta_mean = pm.Deterministic("theta_mean", pt.mean(theta))
+    #     theta_std = pm.Deterministic("theta_std", pt.std(theta))
+    #
+    #     pm.Potential("beam_likelihood", loglike_op(theta))
+    #
+    #     idata = pm.sample_smc(
+    #         draws=args.draws,
+    #         chains=1,
+    #         cores=1,
+    #         random_seed=args.seed,
+    #         progressbar=False,
+    #     )
+    #
+    # with open(outdir / f"{stem}.pkl", "wb") as f:
+    #     pickle.dump(idata, f)
+    #
+    # save_smc_stats(idata, outdir / f"{stem}_smc_stats.pkl")
+    #
+    # idata_save = clean_datatree_for_save(idata)
+    # idata_save.to_netcdf(outdir / f"{stem}.nc")
 
 
 if __name__ == "__main__":
