@@ -346,6 +346,9 @@ if __name__ == "__main__":
         dat_coord_2 = az_rad
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
+        """
+        Type I Generlized Logistic Distribution.
+        """
         arg_constraints = {
             "loc": dist.constraints.real,
             "scale": dist.constraints.positive,
@@ -392,11 +395,19 @@ if __name__ == "__main__":
             enforce_boresight=False,
     ):
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1, high=1e2))
+        shape_vals = numpyro.sample("shape_vals", dist.Uniform(low=1e-2, high=1e2))
         scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1, high=1e2))
         scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-1, high=1e2))
         with numpyro.plate("Nparam", Nparam): # Need to enforce peak-normalization
-            surf_vals = numpyro.sample("surf_vals",
-                                       dist.SoftLaplace(loc=0, scale=scale_vals))
+
+            surf_vals = numpyro.sample(
+                "surf_vals",
+                SkewLogistic(
+                    loc=0,
+                    scale=scale_vals,
+                    shape=shape_vals
+                )
+            )
         spl, grad = get_spl_grad(ortho_knots, enforce_boresight, surf_vals)
         model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
         if add_noise_bias:
@@ -681,18 +692,27 @@ if __name__ == "__main__":
         fig, ax = plt.subplots(nrows=3, figsize=(6, 4))
         # Look at inferred coefficient distributions
         mean_surf_vals = jnp.array(idata.posterior["surf_vals"]).mean(axis=(0,1))
-        plot_hist(
-            idata, 
-            ax[0], 
-            "scale_vals",
+        counts, _, _ = ax[0].hist(
             mean_surf_vals,
-            "Coefficient Values"
+            bins="auto",
+            histtype="step",
+            density=True
         )
+        sl_xplot = np.linspace(-50, 50, num=100)
+        best_fit_sl = SkewLogistic(
+            loc=0,
+            scale=idata.posterior["scale_vals"].mean().values,
+            shape=idata.posterior["shape_vals"].mean().values
+        )
+        best_fit_sl_lp = best_fit_sl.log_prob(sl_xplot)
+        ax[0].plot(sl_xplot, np.exp(best_fit_sl_lp))
         mean_spl, mean_grad = get_spl_grad(
             args.ortho_knots,
             args.enforce_boresight,
             mean_surf_vals
         )
+        ax[0].set_yscale("log")
+        ax[0].set_ylim([0.5 * np.amin(counts[counts > 0]), 2 * np.amax(counts)])
         plot_hist(
             idata, 
             ax[1], 
