@@ -383,16 +383,17 @@ if __name__ == "__main__":
     def vanilla_model(
             dat_coord_1, 
             dat_coord_2, 
-            Ndat, 
+            Ndat,
+            inv_sqrt_count, 
             data=None, 
             add_noise_bias=False,
             noise_bias=1e-6,
             ortho_knots=False,
             enforce_boresight=False,
     ):
-        scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
-        scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
-        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
+        scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1, high=1e2))
+        scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1, high=1e2))
+        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-1, high=1e2))
         with numpyro.plate("Nparam", Nparam): # Need to enforce peak-normalization
             surf_vals = numpyro.sample("surf_vals",
                                        dist.SoftLaplace(loc=0, scale=scale_vals))
@@ -408,9 +409,14 @@ if __name__ == "__main__":
         
         
         with numpyro.plate("Ndat", Ndat):
-            obs = numpyro.sample("obs",
-                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
-                                obs=data)
+            obs = numpyro.sample(
+                "obs",
+                dist.SoftLaplace(
+                    loc=model_vals, 
+                    scale=scale_noise * inv_sqrt_count
+                ),
+                obs=data
+            )
 
     def get_spl_grad(ortho_knots, enforce_boresight, surf_vals):
         if enforce_boresight:
@@ -480,14 +486,50 @@ if __name__ == "__main__":
                                 obs=data)
             
     model = mixture_model if args.mix_model else vanilla_model
-    model_args = (
+
+    mean_res, xedges, yedges, bn = binned_statistic_2d(
         dat_coord_1, 
         dat_coord_2, 
-        len(res)
+        res, 
+        bins=np.linspace(-1, 1, num=161), 
+        expand_binnumbers=True,
+        statistic="median"
+    )
+    count_res, _, _, _ = binned_statistic_2d(
+        dat_coord_1, 
+        dat_coord_2, 
+        res, 
+        bins=np.linspace(-1, 1, num=161), 
+        expand_binnumbers=True,
+        statistic="count"
+    )
+    xcent = get_bin_cent(xedges)
+    ycent = get_bin_cent(yedges)
+    X, Y = np.meshgrid(xcent, ycent, indexing="ij")
+
+    # model_args = (
+    #     dat_coord_1, 
+    #     dat_coord_2, 
+    #     len(res)
+    # )
+    # model_kwargs = {
+    #     "data": res.real, 
+    #     "ortho_knots": args.ortho_knots, 
+    #     "enforce_boresight": args.enforce_boresight
+    # }
+
+    dat_for_inference = mean_res.real
+    count_gt_0 = count_res > 0
+    dat_for_inference = mean_res.real[count_gt_0]
+    model_args = (
+        X[count_gt_0],
+        Y[count_gt_0],
+        len(dat_for_inference),
+        1/np.sqrt(count_res)[count_gt_0]
     )
     model_kwargs = {
-        "data": res.real, 
-        "ortho_knots": args.ortho_knots, 
+        "data": dat_for_inference,
+        "ortho_knots": args.ortho_knots,
         "enforce_boresight": args.enforce_boresight
     }
     if args.inference: # Need to do inference
@@ -530,16 +572,6 @@ if __name__ == "__main__":
         plotdir = f"{outdir}/plots"
         if not os.path.exists(plotdir):
             os.makedirs(plotdir)
-        mean_res, xedges, yedges, bn = binned_statistic_2d(
-            dat_coord_1, 
-            dat_coord_2, 
-            res, 
-            bins=np.linspace(-1, 1, num=101), 
-            expand_binnumbers=True
-        )
-        xcent = get_bin_cent(xedges)
-        ycent = get_bin_cent(yedges)
-        X, Y = np.meshgrid(xcent, ycent, indexing="ij")
 
         idata = az.from_netcdf(f"{outdir}/mcmc_out.nc")
         num_samp_total = args.ndevice * args.num_sample
@@ -586,10 +618,10 @@ if __name__ == "__main__":
 
         mean_beam = beam_samps.mean(axis=0)
         fig, ax = plt.subplots(
-            nrows=4, sharex=True, sharey=True, figsize=(6, 12)
+            nrows=5, sharex=True, sharey=True, figsize=(6, 15)
         )
         mean_im = ax[0].pcolormesh(
-            X, Y, mean_beam, cmap="plasma", vmin=0, vmax=1
+            X, Y, mean_beam, cmap="plasma", vmin=0,
         )
         fig.colorbar(mean_im, ax=ax[0], label="Beam Value")
 
@@ -624,6 +656,17 @@ if __name__ == "__main__":
             cmap="coolwarm"
         )
         fig.colorbar(ratio_im, ax=ax[3], label="Fit Ratio (dB)")
+
+        res_res = mean_res.real - mean_res_post
+        res_im = ax[4].pcolormesh(
+            X, 
+            Y, 
+            res_res, 
+            vmin=-5, 
+            vmax=5, 
+            cmap="coolwarm"
+        )
+        fig.colorbar(res_im, ax=ax[4], label="Res. From Data")
 
         ax[-1].set_xlabel("EW Direction Cosine")
         for ax_ob in ax:
@@ -661,13 +704,27 @@ if __name__ == "__main__":
             mean_spl, 
             *model_args[:2]
         )
-        plot_hist(
-            idata, 
-            ax[2], 
-            "scale_noise",
+        # plot_hist(
+        #     idata, 
+        #     ax[2], 
+        #     "scale_noise",
+        #     model_kwargs["data"] - mean_mod_for_data,
+        #     "Data Residuals"
+        # )
+        ax[2].hist(
             model_kwargs["data"] - mean_mod_for_data,
-            "Data Residuals"
+            bins="auto", histtype="step", density=True
         )
+        print(f"Best fit scale_noise: {idata.posterior["scale_noise"].mean().values}")
+        fit_sl = dist.SoftLaplace(
+            loc=0, 
+            scale=idata.posterior["scale_noise"].mean().values*model_args[-1]
+        )
+        ax[2].hist(
+            fit_sl.sample(key=random.key(127636741)),
+            bins="auto", histtype="step", density=True
+        )
+        ax[2].set_yscale("log")
         fig.savefig(f"{plotdir}/dist_plot.pdf")
         plt.close(fig)
 
