@@ -387,7 +387,6 @@ if __name__ == "__main__":
             dat_coord_1, 
             dat_coord_2, 
             Ndat,
-            inv_sqrt_count, 
             data=None, 
             add_noise_bias=False,
             noise_bias=1e-6,
@@ -424,7 +423,7 @@ if __name__ == "__main__":
                 "obs",
                 dist.SoftLaplace(
                     loc=model_vals, 
-                    scale=scale_noise * inv_sqrt_count
+                    scale=scale_noise
                 ),
                 obs=data
             )
@@ -518,31 +517,31 @@ if __name__ == "__main__":
     ycent = get_bin_cent(yedges)
     X, Y = np.meshgrid(xcent, ycent, indexing="ij")
 
-    # model_args = (
-    #     dat_coord_1, 
-    #     dat_coord_2, 
-    #     len(res)
-    # )
-    # model_kwargs = {
-    #     "data": res.real, 
-    #     "ortho_knots": args.ortho_knots, 
-    #     "enforce_boresight": args.enforce_boresight
-    # }
-
-    dat_for_inference = mean_res.real
-    count_gt_0 = count_res > 0
-    dat_for_inference = mean_res.real[count_gt_0]
     model_args = (
-        X[count_gt_0],
-        Y[count_gt_0],
-        len(dat_for_inference),
-        1/np.sqrt(count_res)[count_gt_0]
+        dat_coord_1, 
+        dat_coord_2, 
+        len(res)
     )
     model_kwargs = {
-        "data": dat_for_inference,
-        "ortho_knots": args.ortho_knots,
+        "data": res.real, 
+        "ortho_knots": args.ortho_knots, 
         "enforce_boresight": args.enforce_boresight
     }
+
+    # dat_for_inference = mean_res.real
+    # count_gt_0 = count_res > 0
+    # dat_for_inference = mean_res.real[count_gt_0]
+    # model_args = (
+    #     X[count_gt_0],
+    #     Y[count_gt_0],
+    #     len(dat_for_inference),
+    #     1/np.sqrt(count_res)[count_gt_0]
+    # )
+    # model_kwargs = {
+    #     "data": dat_for_inference,
+    #     "ortho_knots": args.ortho_knots,
+    #     "enforce_boresight": args.enforce_boresight
+    # }
     if args.inference: # Need to do inference
         key = random.key(args.key)
         if args.svi:
@@ -724,27 +723,15 @@ if __name__ == "__main__":
             mean_spl, 
             *model_args[:2]
         )
-        # plot_hist(
-        #     idata, 
-        #     ax[2], 
-        #     "scale_noise",
-        #     model_kwargs["data"] - mean_mod_for_data,
-        #     "Data Residuals"
-        # )
-        ax[2].hist(
+        plot_hist(
+            idata, 
+            ax[2], 
+            "scale_noise",
             model_kwargs["data"] - mean_mod_for_data,
-            bins="auto", histtype="step", density=True
+            "Data Residuals"
         )
         print(f"Best fit scale_noise: {idata.posterior["scale_noise"].mean().values}")
-        fit_sl = dist.SoftLaplace(
-            loc=0, 
-            scale=idata.posterior["scale_noise"].mean().values*model_args[-1]
-        )
-        ax[2].hist(
-            fit_sl.sample(key=random.key(127636741)),
-            bins="auto", histtype="step", density=True
-        )
-        ax[2].set_yscale("log")
+
         fig.savefig(f"{plotdir}/dist_plot.pdf")
         plt.close(fig)
 
