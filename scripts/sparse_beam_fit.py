@@ -2,7 +2,8 @@ from pathlib import Path
 from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
     make_disk_mask, make_flat_index, make_constraint_info, inject_pivot, \
-    eval_spline, eval_spline_samples
+    eval_spline, eval_spline_samples, chunk_passes, chunks_to_healpix_counts, \
+    healpix_to_pyuvdata, bin_chunk
 
 import numpy as np
 
@@ -98,7 +99,7 @@ def stack_pass_attr(attr, passes, slc=slice(None), db_cut=3):
     filtered_passes = filter(filter_fn, passes[slc])
     return np.concatenate([getattr(p, attr) for p in filtered_passes])
 
-def get_pass_subset(passes, ds_factor, pass_slice):
+def get_pass_subset(passes, ds_factor, pass_slice, horizon_cut=0.):
     alt_deg = []
     az_deg = []
     power_db = []
@@ -115,7 +116,7 @@ def get_pass_subset(passes, ds_factor, pass_slice):
         this_alt_deg = this_alt_deg[ds_factor//2::ds_factor]
         this_az_deg = this_az_deg[ds_factor//2::ds_factor]
 
-        above_horizon = this_alt_deg > 0
+        above_horizon = this_alt_deg > horizon_cut
         this_pow = this_pow[above_horizon]
         this_alt_deg = this_alt_deg[above_horizon]
         this_az_deg = this_az_deg[above_horizon]
@@ -237,7 +238,7 @@ if __name__ == "__main__":
     numpyro.set_host_device_count(args.ndevice)
     from numpyro import distributions as dist
     from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
-    from numpyro.infer.autoguide import AutoDelta   
+    from numpyro.infer.autoguide import AutoDelta
     
     from jax import random
     import jax.numpy as jnp
@@ -288,30 +289,30 @@ if __name__ == "__main__":
             pyrandom.seed(args.jackknife_key)
             pyrandom.shuffle(passes)
         if args.jackknife_half: # implicitly second half
-            pass_slice = slice(
-                Npass_total // 2, 
-                Npass_total
-            )
+            chunk = list(range(Npass_total // 2, Npass_total))
         else: # otherwise first half
-            pass_slice = slice(
-                0, 
-                Npass_total // 2
-            )
+            chunk = list(range(Npass_total // 2))
     elif args.num_pass is None:
-        pass_slice = slice(
-            0,
-            Npass_total
-        )
+        chunk = list(range(Npass_total))
     else:
-        pass_slice = slice(
-            0,
-            args.num_pass
-        )
+        chunk = list(range(args.num_pass))
 
-    alt_deg, az_deg, power_db = get_pass_subset(passes, args.ds_factor, pass_slice)
-    az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
-    res, model_beam = get_res(az_rad, za_rad, power_db)
+    # alt_deg, az_deg, power_db = get_pass_subset(passes, args.ds_factor, pass_slice)
+    # az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
+    # res, model_beam = get_res(az_rad, za_rad, power_db)
+    median_map, count_map, mad_map = bin_chunk(
+        passes, chunk
+    )
+    median_values, za_rad, az_rad = healpix_to_pyuvdata(median_map)
+    count_values, _, _ = healpix_to_pyuvdata(count_map)
+    mad_values, _, _ = healpix_to_pyuvdata(mad_map)
 
+    count_gt_0 = count_values > 0
+    median_values = median_values[count_gt_0]
+    za_rad = za_rad[count_gt_0]
+    az_rad = az_rad[count_gt_0]
+    mad_values = mad_values[count_gt_0]
+    count_values = count_values[count_gt_0]
 
     # Do some Bayesian inference with MCMC (NUTS) on some short chains
     if args.ortho_knots:
@@ -321,16 +322,6 @@ if __name__ == "__main__":
         knot_ij, Nparam = make_flat_index(knot_mask)            # static arrays
         if args.enforce_boresight: # Sample one less parameter to satisfy constraint
             Nparam -= 1
-        
-        # Gradient stuff
-        xgrad_base = np.linspace(-1, 1, num=100)
-        ygrad_base = np.copy(xgrad_base)
-        Xgrad, Ygrad = np.meshgrid(xgrad_base, ygrad_base, indexing="ij")
-
-        # This mask is not dealing with spline knots, so don't use the helper
-        grad_mask = Xgrad**2 + Ygrad**2 <= 1.0
-        #Xgrad = Xgrad[grad_mask]
-        #Ygrad = Ygrad[grad_mask]
 
 
         (
@@ -344,6 +335,8 @@ if __name__ == "__main__":
         t_theta, t_phi, p, q, n_th, n_ph, Nparam = prep_spline_params(beam)
         dat_coord_1 = za_rad
         dat_coord_2 = az_rad
+
+    res, model_beam = get_res(az_rad, za_rad, median_values)
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
         """
@@ -387,16 +380,15 @@ if __name__ == "__main__":
             dat_coord_1, 
             dat_coord_2, 
             Ndat,
+            mad_values,
+            inv_sqrt_counts,
             data=None, 
-            add_noise_bias=False,
-            noise_bias=1e-6,
             ortho_knots=False,
             enforce_boresight=False,
     ):
         scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1, high=1e2))
         shape_vals = numpyro.sample("shape_vals", dist.Uniform(low=1e-2, high=1e2))
         scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1, high=1e2))
-        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-1, high=1e2))
         with numpyro.plate("Nparam", Nparam): # Need to enforce peak-normalization
 
             surf_vals = numpyro.sample(
@@ -409,9 +401,6 @@ if __name__ == "__main__":
             )
         spl, grad = get_spl_grad(ortho_knots, enforce_boresight, surf_vals)
         model_vals = eval_spline_batch(spl, dat_coord_1, dat_coord_2) # may be x_data, y_data
-        if add_noise_bias:
-            model_vals += 10 * jnp.log10(1 + noise_bias / model_beam / to_lin(model_vals))
-        
         
         lp1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
         lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
@@ -423,7 +412,7 @@ if __name__ == "__main__":
                 "obs",
                 dist.SoftLaplace(
                     loc=model_vals, 
-                    scale=scale_noise
+                    scale=mad_values * inv_sqrt_counts * 2 / jnp.pi
                 ),
                 obs=data
             )
@@ -497,30 +486,12 @@ if __name__ == "__main__":
             
     model = mixture_model if args.mix_model else vanilla_model
 
-    mean_res, xedges, yedges, bn = binned_statistic_2d(
-        dat_coord_1, 
-        dat_coord_2, 
-        res, 
-        bins=np.linspace(-1, 1, num=161), 
-        expand_binnumbers=True,
-        statistic="median"
-    )
-    count_res, _, _, _ = binned_statistic_2d(
-        dat_coord_1, 
-        dat_coord_2, 
-        res, 
-        bins=np.linspace(-1, 1, num=161), 
-        expand_binnumbers=True,
-        statistic="count"
-    )
-    xcent = get_bin_cent(xedges)
-    ycent = get_bin_cent(yedges)
-    X, Y = np.meshgrid(xcent, ycent, indexing="ij")
-
     model_args = (
         dat_coord_1, 
         dat_coord_2, 
-        len(res)
+        len(median_values),
+        mad_values,
+        1/np.sqrt(count_values)
     )
     model_kwargs = {
         "data": res.real, 
@@ -546,7 +517,7 @@ if __name__ == "__main__":
         key = random.key(args.key)
         if args.svi:
             guide = AutoDelta(model)
-            svi = SVI(model, guide, numpyro.optim.Adam(1e-1), loss=Trace_ELBO())
+            svi = SVI(model, guide, numpyro.optim.Adam(1), loss=Trace_ELBO())
             svi_result = svi.run(
                 key, 
                 args.num_sample, 
