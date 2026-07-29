@@ -226,87 +226,123 @@ def chunks_to_healpix_counts(
         List containing one sample-count map per chunk. Each map has shape
         ``(hp.nside2npix(nside),)``.
     """
-    if not hp.isnsideok(nside):
-        raise ValueError(f"Invalid HEALPix NSIDE: {nside}.")
 
     if decimate < 1:
         raise ValueError("decimate must be >= 1.")
 
-    npix = hp.nside2npix(nside)
 
     median_maps: list[np.ndarray] = []
     count_maps: list[np.ndarray] = []
     mad_maps: list[np.ndarray] = []
 
     for chunk in chunks:
-        power_values: list[list[float]] = [[] for _ in range(npix)]
-
-        for pass_index in chunk:
-            pass_record = passes[pass_index]
-
-            alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
-            az_deg = np.asarray(pass_record.az_deg, dtype=float)
-            power_db = np.asarray(pass_record.power_db, dtype=float)
-
-            if not (
-                alt_deg.shape
-                == az_deg.shape
-                == power_db.shape
-            ):
-                raise ValueError(
-                    "alt_deg, az_deg, and power_db must have matching shapes."
-                )
-
-            valid = (
-                np.isfinite(alt_deg)
-                & np.isfinite(az_deg)
-                & np.isfinite(power_db)
-                & (alt_deg > 0.0)
-            )
-
-            if not np.any(valid):
-                continue
-
-            alt_valid = alt_deg[valid]
-            az_valid = az_deg[valid]
-            power_valid = power_db[valid]
-
-            if decimate > 1:
-                alt_valid = alt_valid[::decimate]
-                az_valid = az_valid[::decimate]
-                power_valid = power_valid[::decimate]
-
-            theta = np.radians(90.0 - alt_valid)
-            phi = np.radians(az_valid)
-
-            pixels = hp.ang2pix(
-                nside,
-                theta,
-                phi,
-            )
-
-            for pixel, power in zip(
-                pixels,
-                power_valid,
-            ):
-                power_values[pixel].append(float(power))
-
-        median_map = np.full(npix, np.nan, dtype=float)
-        count_map = np.zeros(npix, dtype=int)
-        mad_map = np.full(npix, np.nan, dtype=float)
-
-        for pixel, values in enumerate(power_values):
-            count_map[pixel] = len(values)
-
-            if values:
-                median_map[pixel] = np.median(values)
-                mad_map[pixel] = mad(values, scale="normal")
+        median_map, count_map, mad_map = bin_chunk(
+            passes, 
+            chunk, 
+            decimate=decimate, 
+            nside=nside
+        )
 
         median_maps.append(median_map)
         count_maps.append(count_map)
         mad_maps.append(mad_map)
 
     return median_maps, count_maps, mad_maps
+
+def bin_chunk(
+        passes, 
+        chunk,
+        decimate: int = 1, 
+        nside: int = 32, 
+):
+    """
+    Bin a particular chunk from passes.
+
+    Parameters:
+        passes
+            List of pass records.
+        chunk
+            List of indices into passes indicating the chunk
+        decimate
+            Keep every ``decimate``-th valid sample from each pass. A value of 1
+            retains all valid samples. Default is 1.
+        nside
+            HEALPix NSIDE parameter. Default is 32.
+    Returns:
+        median_map
+            Median power per pixel, with unpopulated pixels set to nan
+        count_map
+            Number of counts per pixel
+        mad_map
+            Median absolute deviation, scaled to match standard deviation of
+            normal distribution, per pixel. Unpopulated pixels set to nan.
+    """
+    if not hp.isnsideok(nside):
+        raise ValueError(f"Invalid HEALPix NSIDE: {nside}.")
+    npix = hp.nside2npix(nside)
+    power_values: list[list[float]] = [[] for _ in range(npix)]
+
+    for pass_index in chunk:
+        pass_record = passes[pass_index]
+
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
+
+        if not (
+                alt_deg.shape
+                == az_deg.shape
+                == power_db.shape
+            ):
+            raise ValueError(
+                    "alt_deg, az_deg, and power_db must have matching shapes."
+                )
+
+        valid = (
+                np.isfinite(alt_deg)
+                & np.isfinite(az_deg)
+                & np.isfinite(power_db)
+                & (alt_deg > 0.0)
+            )
+
+        if not np.any(valid):
+            continue
+
+        alt_valid = alt_deg[valid]
+        az_valid = az_deg[valid]
+        power_valid = power_db[valid]
+
+        if decimate > 1:
+            alt_valid = alt_valid[::decimate]
+            az_valid = az_valid[::decimate]
+            power_valid = power_valid[::decimate]
+
+        theta = np.radians(90.0 - alt_valid)
+        phi = np.radians(az_valid)
+
+        pixels = hp.ang2pix(
+                nside,
+                theta,
+                phi,
+            )
+
+        for pixel, power in zip(
+                pixels,
+                power_valid,
+            ):
+            power_values[pixel].append(float(power))
+
+    median_map = np.full(npix, np.nan, dtype=float)
+    count_map = np.zeros(npix, dtype=int)
+    mad_map = np.full(npix, np.nan, dtype=float)
+
+    for pixel, values in enumerate(power_values):
+        count_map[pixel] = len(values)
+
+        if values:
+            median_map[pixel] = np.median(values)
+            mad_map[pixel] = mad(values, scale="normal")
+    return median_map, count_map, mad_map
 
 def healpix_to_pyuvdata(
     healpix_map: np.ndarray,
