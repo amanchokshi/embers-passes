@@ -254,6 +254,8 @@ def bin_chunk(
         chunk,
         decimate: int = 1, 
         nside: int = 32, 
+        filter: bool = False,
+        outlier_threshold: float = 3., 
 ):
     """
     Bin a particular chunk from passes.
@@ -268,6 +270,10 @@ def bin_chunk(
             retains all valid samples. Default is 1.
         nside
             HEALPix NSIDE parameter. Default is 32.
+        filter
+            Whether to trim outliers before binning (default False)
+        outlier_threshold:
+            Multiple of MAD to throw away
     Returns:
         median_map
             Median power per pixel, with unpopulated pixels set to nan
@@ -337,11 +343,49 @@ def bin_chunk(
     mad_map = np.full(npix, np.nan, dtype=float)
 
     for pixel, values in enumerate(power_values):
-        count_map[pixel] = len(values)
+        if filter:
+            if not values:
+                    continue
 
-        if values:
-            median_map[pixel] = np.median(values)
-            mad_map[pixel] = mad(values, scale="normal")
+            values = np.asarray(values, dtype=float)
+
+            pixel_median = np.median(values)
+            pixel_mad = mad(
+                values,
+                scale="normal",
+                nan_policy="omit",
+            )
+
+            if pixel_mad == 0.0:
+                keep = values == pixel_median
+            else:
+                keep = (
+                    np.abs(values - pixel_median)
+                    <= outlier_threshold * pixel_mad
+                )
+
+            filtered_values = values[keep]
+
+            if filtered_values.size == 0:
+                continue
+
+            filtered_median = np.median(filtered_values)
+            filtered_mad = mad(
+                filtered_values,
+                scale="normal",
+                nan_policy="omit",
+            )
+            filtered_count = filtered_values.size
+
+            median_map[pixel] = filtered_median
+            mad_map[pixel] = filtered_mad
+            count_map[pixel] = filtered_count
+        else:
+            count_map[pixel] = len(values)
+
+            if values:
+                median_map[pixel] = np.median(values)
+                mad_map[pixel] = mad(values, scale="normal")
     return median_map, count_map, mad_map
 
 def healpix_to_pyuvdata(
