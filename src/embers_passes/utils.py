@@ -5,6 +5,7 @@ import itertools
 
 import arviz as az
 import numpy as np
+from scipy.stats import median_abs_deviation as mad
 import healpy as hp
 
 def load_config(config_path: str) -> argparse.Namespace:
@@ -235,6 +236,7 @@ def chunks_to_healpix_counts(
 
     median_maps: list[np.ndarray] = []
     count_maps: list[np.ndarray] = []
+    mad_maps: list[np.ndarray] = []
 
     for chunk in chunks:
         power_values: list[list[float]] = [[] for _ in range(npix)]
@@ -291,17 +293,20 @@ def chunks_to_healpix_counts(
 
         median_map = np.full(npix, np.nan, dtype=float)
         count_map = np.zeros(npix, dtype=int)
+        mad_map = np.full(npix, np.nan, dtype=float)
 
         for pixel, values in enumerate(power_values):
             count_map[pixel] = len(values)
 
             if values:
                 median_map[pixel] = np.median(values)
+                mad_map[pixel] = mad(values, scale="normal")
 
         median_maps.append(median_map)
         count_maps.append(count_map)
+        mad_maps.append(mad_map)
 
-    return median_maps, count_maps
+    return median_maps, count_maps, mad_maps
 
 def healpix_to_pyuvdata(
     healpix_map: np.ndarray,
