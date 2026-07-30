@@ -306,10 +306,15 @@ if __name__ == "__main__":
         if args.jackknife_mode == "random": # shuffle the passes first
             pyrandom.seed(args.jackknife_key)
             pyrandom.shuffle(passes)
-        if args.jackknife_half: # implicitly second half
-            chunk = list(range(Npass_total // 2, Npass_total))
-        else: # otherwise first half
-            chunk = list(range(Npass_total // 2))
+            if args.jackknife_half: # implicitly second half
+                chunk = list(range(Npass_total // 2, Npass_total))
+            else: # otherwise first half
+                chunk = list(range(Npass_total // 2))
+        elif args.jackknife_mode == "time":
+            chunks, bins_edges, bin_centers = chunk_passes(passes, args.chunk_sec)
+            chunk = chunks[args.chunk_ind]
+        else:
+            raise ValueError("Invalid jackknife mode. Should be 'time' or 'random'. Check config file." )
     elif args.num_pass is None:
         chunk = list(range(Npass_total))
     else:

@@ -25,3 +25,5 @@ decimation_factor: 25
 inference: true
 postprocess: true
 pass_plot_seed: 321906282
+chunk_sec: 1728000 # 20 days
+chunk_ind: 0
