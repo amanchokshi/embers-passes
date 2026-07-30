@@ -276,17 +276,28 @@ def bin_chunk(
             Multiple of MAD to throw away
     Returns:
         median_map
-            Median power per pixel, with unpopulated pixels set to nan
+            Median of per-pass medians per pixel, with unpopulated pixels set to nan
         count_map
-            Number of counts per pixel
+            Total number of samples (summed across contributing passes) per pixel
         mad_map
-            Median absolute deviation, scaled to match standard deviation of
-            normal distribution, per pixel. Unpopulated pixels set to nan.
+            Count-weighted RMS of per-pass MADs per pixel (i.e. sqrt of the
+            weighted average of per-pass MAD-squared values, weighted by each
+            pass's sample count in that pixel), scaled to match standard
+            deviation of normal distribution. Unpopulated pixels set to nan.
+        median_sem_map
+            MAD of the per-pass medians per pixel, divided by sqrt(n), where n
+            is the number of passes contributing to that pixel. Unpopulated
+            pixels set to nan.
     """
     if not hp.isnsideok(nside):
         raise ValueError(f"Invalid HEALPix NSIDE: {nside}.")
     npix = hp.nside2npix(nside)
-    power_values: list[list[float]] = [[] for _ in range(npix)]
+
+    # Per-pixel lists of per-pass medians, MADs, and sample counts (one entry
+    # per pass that contributed samples to that pixel).
+    pass_median_values: list[list[float]] = [[] for _ in range(npix)]
+    pass_mad_values: list[list[float]] = [[] for _ in range(npix)]
+    pass_count_values: list[list[int]] = [[] for _ in range(npix)]
 
     for pass_index in chunk:
         pass_record = passes[pass_index]
@@ -332,22 +343,43 @@ def bin_chunk(
                 phi,
             )
 
+        # Accumulate this pass's samples per-pixel before reducing to a
+        # single median/MAD/count per pixel for this pass.
+        pass_power_values: dict[int, list[float]] = {}
         for pixel, power in zip(
                 pixels,
                 power_valid,
             ):
-            power_values[pixel].append(float(power))
+            pass_power_values.setdefault(pixel, []).append(float(power))
+
+        for pixel, values in pass_power_values.items():
+            values_arr = np.asarray(values, dtype=float)
+            pass_median = np.median(values_arr)
+            pass_mad = mad(
+                values_arr,
+                scale="normal",
+                nan_policy="omit",
+            )
+            pass_median_values[pixel].append(pass_median)
+            pass_mad_values[pixel].append(pass_mad)
+            pass_count_values[pixel].append(values_arr.size)
 
     median_map = np.full(npix, np.nan, dtype=float)
     count_map = np.zeros(npix, dtype=int)
     mad_map = np.full(npix, np.nan, dtype=float)
+    median_sem_map = np.full(npix, np.nan, dtype=float)
 
-    for pixel, values in enumerate(power_values):
+    for pixel, values in enumerate(pass_median_values):
+        mads = pass_mad_values[pixel]
+        counts = pass_count_values[pixel]
+
         if filter:
             if not values:
-                    continue
+                continue
 
             values = np.asarray(values, dtype=float)
+            mads = np.asarray(mads, dtype=float)
+            counts = np.asarray(counts, dtype=int)
 
             pixel_median = np.median(values)
             pixel_mad = mad(
@@ -365,28 +397,48 @@ def bin_chunk(
                 )
 
             filtered_values = values[keep]
+            filtered_mads = mads[keep]
+            filtered_counts = counts[keep]
 
             if filtered_values.size == 0:
                 continue
 
             filtered_median = np.median(filtered_values)
-            filtered_mad = mad(
+            filtered_mad = np.sqrt(
+                np.average(filtered_mads**2, weights=filtered_counts)
+            )
+            filtered_count = int(filtered_counts.sum())
+            filtered_median_mad = mad(
                 filtered_values,
                 scale="normal",
                 nan_policy="omit",
             )
-            filtered_count = filtered_values.size
 
             median_map[pixel] = filtered_median
             mad_map[pixel] = filtered_mad
             count_map[pixel] = filtered_count
+            median_sem_map[pixel] = filtered_median_mad / np.sqrt(filtered_values.size)
         else:
-            count_map[pixel] = len(values)
+            counts = np.asarray(counts, dtype=int)
+            count_map[pixel] = int(counts.sum())
 
             if values:
+                mads = np.asarray(mads, dtype=float)
+                # Median of medians, technically not global median, probably fine.
+                # Does prevent a "bad" pass with lots of counts from dominating!
                 median_map[pixel] = np.median(values)
-                mad_map[pixel] = mad(values, scale="normal")
-    return median_map, count_map, mad_map
+                # Extra counts factor in denominator since noise is independent _per sample_
+                mad_map[pixel] = np.sqrt(
+                    np.average(mads**2, weights=counts) / count_map[pixel]
+                )
+                # Variation expected from different constant _per pass_
+                median_of_medians_mad = mad(
+                    values,
+                    scale="normal",
+                    nan_policy="omit",
+                )
+                median_sem_map[pixel] = median_of_medians_mad / np.sqrt(len(values))
+    return median_map, count_map, mad_map, median_sem_map
 
 def healpix_to_pyuvdata(
     healpix_map: np.ndarray,
