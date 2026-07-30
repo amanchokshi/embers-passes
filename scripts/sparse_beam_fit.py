@@ -158,11 +158,29 @@ def plot_pass_ratio(outfile, az_rad, za_rad, res):
     fig.savefig(outfile)
     plt.close(fig)
 
-def prep_spline_params(beam, ortho_knots=False):
+def prep_spline_params(beam, ortho_knots=False, spice_variant=4):
     if ortho_knots:
-        interval_1 = np.arange(-1., -0.6, 0.05)
-        interval_2 = np.arange(-0.6, -0.4, 0.025)
-        interval_3 = np.arange(-0.4, 0., 0.1)
+        if spice_variant:
+            if spice_variant > 3: # Increasing density only at horizon
+                interval_1 = np.arange(-1, -0.6, 0.05 / (2**(spice_variant - 3)))
+                interval_2 = np.arange(-0.6, -0.4, 0.025)
+                interval_3 = np.arange(-0.4, 0., 0.1)
+            elif spice_variant == 3: # Twice as dense except in main lobe
+                interval_1 = np.arange(-1., -0.6, 0.025)
+                interval_2 = np.arange(-0.6, -0.4, 0.0125)
+                interval_3 = np.arange(-0.4, 0., 0.1)
+            elif spice_variant == 2: # Twice as dense except at horizon
+                interval_1 = np.arange(-1., -0.6, 0.05)
+                interval_2 = np.arange(-0.6, -0.4, 0.0125)
+                interval_3 = np.arange(-0.4, 0., 0.05)
+            else: # Twice as dense everywhere
+                interval_1 = np.arange(-1., -0.6, 0.025)
+                interval_2 = np.arange(-0.6, -0.4, 0.0125)
+                interval_3 = np.arange(-0.4, 0., 0.05)
+        else:
+            interval_1 = np.arange(-1., -0.6, 0.05)
+            interval_2 = np.arange(-0.6, -0.4, 0.025)
+            interval_3 = np.arange(-0.4, 0., 0.1)
 
         base_knots = np.concatenate([
             interval_1, 
