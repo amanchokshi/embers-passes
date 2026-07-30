@@ -158,7 +158,7 @@ def plot_pass_ratio(outfile, az_rad, za_rad, res):
     fig.savefig(outfile)
     plt.close(fig)
 
-def prep_spline_params(beam, ortho_knots=False, spice_variant=4):
+def prep_spline_params(beam, ortho_knots=False, spice_variant=0):
     if ortho_knots:
         if spice_variant:
             if spice_variant > 3: # Increasing density only at horizon
@@ -323,19 +323,21 @@ if __name__ == "__main__":
     # alt_deg, az_deg, power_db = get_pass_subset(passes, args.ds_factor, pass_slice)
     # az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
     # res, model_beam = get_res(az_rad, za_rad, power_db)
-    median_map, count_map, mad_map = bin_chunk(
+    median_map, count_map, mad_map, median_sem_map = bin_chunk(
         passes, chunk
     )
     median_values, za_rad, az_rad = healpix_to_pyuvdata(median_map)
     count_values, _, _ = healpix_to_pyuvdata(count_map)
     mad_values, _, _ = healpix_to_pyuvdata(mad_map)
+    median_sem_values, _, _ = healpix_to_pyuvdata(median_sem_map)
 
-    count_gt_0 = count_values > 0
-    median_values = median_values[count_gt_0]
-    za_rad = za_rad[count_gt_0]
-    az_rad = az_rad[count_gt_0]
-    mad_values = mad_values[count_gt_0]
-    count_values = count_values[count_gt_0]
+    count_gt_2 = count_values > 2 # MAD estimates completely untrustworthy for counts less than 3
+    median_values = median_values[count_gt_2]
+    za_rad = za_rad[count_gt_2]
+    az_rad = az_rad[count_gt_2]
+    mad_values = mad_values[count_gt_2]
+    count_values = count_values[count_gt_2]
+    median_sem_values = median_sem_values[count_gt_2]
 
     # Do some Bayesian inference with MCMC (NUTS) on some short chains
     if args.ortho_knots:
@@ -403,8 +405,7 @@ if __name__ == "__main__":
             dat_coord_1, 
             dat_coord_2, 
             Ndat,
-            mad_values,
-            inv_sqrt_counts,
+            noise_scale,
             data=None, 
             ortho_knots=False,
             enforce_boresight=False,
@@ -429,13 +430,12 @@ if __name__ == "__main__":
         lp2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
         numpyro.factor("grad_pot", lp1 + lp2)
         
-        
         with numpyro.plate("Ndat", Ndat):
             obs = numpyro.sample(
                 "obs",
                 dist.SoftLaplace(
                     loc=model_vals, 
-                    scale=mad_values * inv_sqrt_counts * 2 / jnp.pi
+                    scale=noise_scale * 2 / jnp.pi
                 ),
                 obs=data
             )
@@ -513,8 +513,7 @@ if __name__ == "__main__":
         dat_coord_1, 
         dat_coord_2, 
         len(median_values),
-        mad_values,
-        1/np.sqrt(count_values)
+        np.sqrt(mad_values**2 + median_sem_values**2),
     )
     model_kwargs = {
         "data": res.real, 
