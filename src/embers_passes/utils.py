@@ -276,7 +276,8 @@ def bin_chunk(
             Multiple of MAD to throw away
     Returns:
         median_map
-            Median of per-pass medians per pixel, with unpopulated pixels set to nan
+            Median power per pixel, pooled over all raw samples from
+            contributing passes, with unpopulated pixels set to nan
         count_map
             Total number of samples (summed across contributing passes) per pixel
         mad_map
@@ -293,8 +294,10 @@ def bin_chunk(
         raise ValueError(f"Invalid HEALPix NSIDE: {nside}.")
     npix = hp.nside2npix(nside)
 
-    # Per-pixel lists of per-pass medians, MADs, and sample counts (one entry
-    # per pass that contributed samples to that pixel).
+    # Per-pixel lists, one entry per pass that contributed samples to that
+    # pixel: raw sample arrays (for the pooled global median), plus each
+    # pass's median, MAD, and sample count.
+    pass_raw_values: list[list[np.ndarray]] = [[] for _ in range(npix)]
     pass_median_values: list[list[float]] = [[] for _ in range(npix)]
     pass_mad_values: list[list[float]] = [[] for _ in range(npix)]
     pass_count_values: list[list[int]] = [[] for _ in range(npix)]
@@ -360,6 +363,7 @@ def bin_chunk(
                 scale="normal",
                 nan_policy="omit",
             )
+            pass_raw_values[pixel].append(values_arr)
             pass_median_values[pixel].append(pass_median)
             pass_mad_values[pixel].append(pass_mad)
             pass_count_values[pixel].append(values_arr.size)
@@ -370,6 +374,7 @@ def bin_chunk(
     median_sem_map = np.full(npix, np.nan, dtype=float)
 
     for pixel, values in enumerate(pass_median_values):
+        raw_arrays = pass_raw_values[pixel]
         mads = pass_mad_values[pixel]
         counts = pass_count_values[pixel]
 
@@ -399,11 +404,15 @@ def bin_chunk(
             filtered_values = values[keep]
             filtered_mads = mads[keep]
             filtered_counts = counts[keep]
+            filtered_raw_arrays = [
+                arr for arr, k in zip(raw_arrays, keep) if k
+            ]
 
             if filtered_values.size == 0:
                 continue
 
-            filtered_median = np.median(filtered_values)
+            filtered_pooled_raw = np.concatenate(filtered_raw_arrays)
+            filtered_global_median = np.median(filtered_pooled_raw)
             filtered_mad = np.sqrt(
                 np.average(filtered_mads**2, weights=filtered_counts)
             )
@@ -414,7 +423,7 @@ def bin_chunk(
                 nan_policy="omit",
             )
 
-            median_map[pixel] = filtered_median
+            median_map[pixel] = filtered_global_median
             mad_map[pixel] = filtered_mad
             count_map[pixel] = filtered_count
             median_sem_map[pixel] = filtered_median_mad / np.sqrt(filtered_values.size)
@@ -424,9 +433,8 @@ def bin_chunk(
 
             if values:
                 mads = np.asarray(mads, dtype=float)
-                # Median of medians, technically not global median, probably fine.
-                # Does prevent a "bad" pass with lots of counts from dominating!
-                median_map[pixel] = np.median(values)
+                pooled_raw = np.concatenate(raw_arrays)
+                median_map[pixel] = np.median(pooled_raw)
                 # Extra counts factor in denominator since noise is independent _per sample_
                 mad_map[pixel] = np.sqrt(
                     np.average(mads**2, weights=counts) / count_map[pixel]
