@@ -234,9 +234,10 @@ def chunks_to_healpix_counts(
     median_maps: list[np.ndarray] = []
     count_maps: list[np.ndarray] = []
     mad_maps: list[np.ndarray] = []
+    median_sem_maps: list[np.ndarray] = []
 
     for chunk in chunks:
-        median_map, count_map, mad_map = bin_chunk(
+        median_map, count_map, mad_map, median_sem_map = bin_chunk(
             passes, 
             chunk, 
             decimate=decimate, 
@@ -246,8 +247,9 @@ def chunks_to_healpix_counts(
         median_maps.append(median_map)
         count_maps.append(count_map)
         mad_maps.append(mad_map)
+        median_sem_maps.append(median_sem_map)
 
-    return median_maps, count_maps, mad_maps
+    return median_maps, count_maps, mad_maps, median_sem_maps
 
 def bin_chunk(
         passes, 
