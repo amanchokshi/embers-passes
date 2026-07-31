@@ -225,6 +225,18 @@ def chunks_to_healpix_counts(
     count_maps
         List containing one sample-count map per chunk. Each map has shape
         ``(hp.nside2npix(nside),)``.
+    mad_maps
+        Count-weighted RMS of per-pass MADs per pixel (i.e. sqrt of the
+        weighted average of per-pass MAD-squared values, weighted by each
+        pass's sample count in that pixel), scaled to match standard
+        deviation of normal distribution, then divided by additional
+        sqrt(count_map) to match expected rms of averaged i.i.d. noise. 
+        Unpopulated pixels set to nan.
+    median_sem_maps
+        MAD of the per-pass medians per pixel, divided by sqrt(n), where n
+        is the number of passes contributing to that pixel. Unpopulated
+        pixels set to nan. Captures variation of per-pass correlated systematics 
+        in final map.
     """
 
     if decimate < 1:
@@ -286,11 +298,14 @@ def bin_chunk(
             Count-weighted RMS of per-pass MADs per pixel (i.e. sqrt of the
             weighted average of per-pass MAD-squared values, weighted by each
             pass's sample count in that pixel), scaled to match standard
-            deviation of normal distribution. Unpopulated pixels set to nan.
+            deviation of normal distribution, then divided by additional
+            sqrt(count_map) to match expected rms of averaged i.i.d. noise. 
+            Unpopulated pixels set to nan.
         median_sem_map
             MAD of the per-pass medians per pixel, divided by sqrt(n), where n
             is the number of passes contributing to that pixel. Unpopulated
-            pixels set to nan.
+            pixels set to nan. Captures variation of per-pass correlated 
+            systematics in final map.
     """
     if not hp.isnsideok(nside):
         raise ValueError(f"Invalid HEALPix NSIDE: {nside}.")
