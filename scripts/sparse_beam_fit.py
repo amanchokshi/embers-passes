@@ -256,12 +256,12 @@ if __name__ == "__main__":
     numpyro.set_host_device_count(args.ndevice)
     from numpyro import distributions as dist
     from numpyro.infer import MCMC, NUTS, SVI, Trace_ELBO
-    from numpyro.infer.autoguide import AutoDelta
+    from numpyro.infer.autoguide import AutoDelta, AutoLaplaceApproximation
     
     from jax import random
     import jax.numpy as jnp
     import jax
-    #jax.config.update("jax_debug_nans", True)
+    jax.config.update("jax_debug_nans", True)
 
     import arviz as az
 
@@ -288,7 +288,7 @@ if __name__ == "__main__":
 
     subdir = f"rf{args.rf_num}/S{args.tile}/{args.pol}"
     if args.jackknife:
-        subdir += f"/{args.jackknife_mode}_jackknife/half{args.jackknife_half}"
+        subdir += f"/{args.jackknife_mode}_jackknife/chunk{args.jackknife_chunk}"
     outdir = f"{args.outdir}/{subdir}"
     if not os.path.exists(outdir):
         os.makedirs(outdir)
@@ -538,7 +538,13 @@ if __name__ == "__main__":
     if args.inference: # Need to do inference
         key = random.key(args.key)
         if args.svi:
-            guide = AutoDelta(model)
+            #guide = AutoDelta(model)
+            """
+            Train an AutoLaplace guide to extract the correlation structure
+            of the spline coefficients. Use this in a multivariate normal guide
+            to debias the posterior of the scale parameters. 
+            """
+            guide = AutoLaplaceApproximation(model)
             svi = SVI(model, guide, numpyro.optim.Adam(1), loss=Trace_ELBO())
             svi_result = svi.run(
                 key, 
@@ -552,8 +558,152 @@ if __name__ == "__main__":
             plt.xlabel("Iteration")
             plt.savefig(f"{outdir}/losses.pdf")
 
+            svi_samps = guide.sample_posterior(
+                random.key(234672367), 
+                params,
+                *model_args,
+                sample_shape=(1000,),
+                **model_kwargs,
+            )
+
+            with open(f"{outdir}/svi_laplace_params.pkl", "wb") as svi_params_file:
+                pickle.dump(params, svi_params_file)
+            with open(f"{outdir}/svi_laplace_samps.pkl", "wb") as svi_samps_file:
+                pickle.dump(svi_samps, svi_samps_file)
+
+            def get_index_map(guide):
+                """Map each latent site name -> array of positions in the flattened
+                unconstrained vector, using the guide's own unpack logic (so it's
+                correct regardless of internal ordering)."""
+                latent_dim = guide.latent_dim
+                idx = jnp.arange(latent_dim, dtype=jnp.result_type(float))
+                # _unpack_latent reshapes/splits without touching values, so pushing
+                # plain indices through it is safe and gives us the index layout.
+                unpacked = guide._unpack_latent(idx)
+                return {name: np.asarray(v).reshape(-1).astype(int) for name, v in unpacked.items()}
+
+            def subset_scale_tril(guide, params, names):
+                """Lower-Cholesky factor of the approximate posterior restricted to `names`."""
+                posterior = guide.get_posterior(params)          # MultivariateNormal, full latent
+                scale_tril_full = np.asarray(posterior.scale_tril)
+                cov_full = scale_tril_full @ scale_tril_full.T
+
+                idx_map = get_index_map(guide)
+                idx = np.concatenate([idx_map[n] for n in names])
+
+                cov_sub = cov_full[np.ix_(idx, idx)]
+                scale_tril_sub = np.linalg.cholesky(cov_sub)
+                return scale_tril_sub, idx_map   # idx_map lets you know which rows belong to which name
+
+            def extract_corr_and_scale(auto_laplace_guide, params, site_name):
+                """From a fitted AutoLaplaceApproximation, get the correlation Cholesky
+                factor and marginal std devs for one site (uses the subset_scale_tril
+                helper from before, restricted to a single site)."""
+                L_sub, idx_map = subset_scale_tril(auto_laplace_guide, params, [site_name])
+                cov = L_sub @ L_sub.T
+                sd = np.sqrt(np.diag(cov))
+                corr = cov / np.outer(sd, sd)
+                corr = (corr + corr.T) / 2                 # symmetrize away fp noise
+                # nudge onto the PD cone if numerically borderline
+                eigval_floor = 1e-6
+                w, v = np.linalg.eigh(corr)
+                w = np.clip(w, eigval_floor, None)
+                corr = (v * w) @ v.T
+                d = np.sqrt(np.diag(corr))
+                corr = corr / np.outer(d, d)               # renormalize diag to exactly 1
+
+                L_corr = np.linalg.cholesky(corr)
+                return jnp.asarray(L_corr), jnp.asarray(sd)
+
+
+            from numpyro.distributions import constraints, transforms
+
+            def make_custom_guide(Nparam, L_corr_init, sd_init=None, learn_corr=False):
+                if sd_init is None:
+                    sd_init = jnp.ones(Nparam)
+                log_scale_init = jnp.log(sd_init)
+
+                def guide(dat_coord_1, dat_coord_2, Ndat, noise_scale, data=None,
+                          ortho_knots=False, enforce_boresight=False):
+
+                    # --- surf_vals: fixed/learnable correlation, free marginal scale+loc ---
+                    loc_surf = numpyro.param("surf_vals_loc", jnp.zeros(Nparam))
+                    log_scale_surf = numpyro.param("surf_vals_log_scale", log_scale_init)
+                    scale_surf = jnp.exp(log_scale_surf)
+
+                    if learn_corr:
+                        L_corr = numpyro.param(
+                            "surf_vals_L_corr", L_corr_init,
+                            constraint=constraints.corr_cholesky,
+                        )
+                    else:
+                        L_corr = L_corr_init  # closed-over constant, not optimized
+
+                    L_cov = scale_surf[:, None] * L_corr   # diag(scale) @ L_corr
+
+                    # Auxiliary site: carries the real log-density, lives outside the plate,
+                    # event_dim=1 (a single Nparam-dimensional MVN draw).
+                    surf_vals = numpyro.sample(
+                        "surf_vals_aux",
+                        dist.MultivariateNormal(loc=loc_surf, scale_tril=L_cov),
+                        infer={"is_auxiliary": True},
+                    )
+
+                    # Re-emit per-element inside the plate to match the model's event_dim=0
+                    # structure. mask(False) zeroes its log-prob contribution so nothing
+                    # gets double-counted in the ELBO — it's just there to satisfy the
+                    # model/guide site-matching check.
+                    with numpyro.plate("Nparam", Nparam):
+                        numpyro.sample(
+                            "surf_vals",
+                            dist.Delta(surf_vals, event_dim=0).mask(False),
+                        )
+
+                    # --- bounded scalar params: diagonal normal pushed through biject_to ---
+                    for name, low, high in [
+                        ("scale_vals", 1.0, 1e2),
+                        ("shape_vals", 1e-2, 1e2),
+                        ("scale_grad", 1.0, 1e2),
+                    ]:
+                        loc = numpyro.param(f"{name}_loc", 0.0)
+                        log_scale = numpyro.param(f"{name}_log_scale", 0.0)
+                        base = dist.Normal(loc, jnp.exp(log_scale))
+                        numpyro.sample(
+                            name,
+                            dist.TransformedDistribution(
+                                base, transforms.biject_to(constraints.interval(low, high))
+                            ),
+                        )
+
+                return guide
+
+            L_corr_init, sd_init = extract_corr_and_scale(guide, params, "surf_vals")
+            custom_guide = make_custom_guide(Nparam, L_corr_init, sd_init, learn_corr=False)
+            svi = SVI(vanilla_model, custom_guide, numpyro.optim.Adam(1e-2), loss=Trace_ELBO(num_particles=8))
+            svi_result = svi.run(random.key(23564614), 2 * args.num_sample, *model_args, **model_kwargs)
+
+            params = svi_result.params
+            plt.plot(svi_result.losses)
+            plt.ylabel("Loss")
+            plt.xlabel("Iteration")
+            plt.savefig(f"{outdir}/custom_guide_losses.pdf")
+
+            from numpyro.infer import Predictive
+
+            predictive = Predictive(custom_guide, params=svi_result.params, num_samples=1000)
+            svi_samps = predictive(
+                random.key(5623462), *model_args,
+                ortho_knots=model_kwargs["ortho_knots"], 
+                enforce_boresight=model_kwargs["enforce_boresight"],
+                # data=None  -- guide doesn't use data, but pass same non-data args as training
+            )
+
             with open(f"{outdir}/svi_params.pkl", "wb") as svi_params_file:
                 pickle.dump(params, svi_params_file)
+            with open(f"{outdir}/svi_samps.pkl", "wb") as svi_samps_file:
+                pickle.dump(svi_samps, svi_samps_file)
+
+            
         else:
             kernel = NUTS(model)
             mcmc = MCMC(
