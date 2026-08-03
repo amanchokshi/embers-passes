@@ -16,14 +16,14 @@ num_sample: 2000
 mix_model: false
 jackknife: false
 jackknife_mode: "time" # "random" also allowed
-jackknife_half: 0
+jackknife_chunk: 0
 jackknife_key: 224007541
 ortho_knots: false
 svi: false
 enforce_boresight: false
-decimation_factor: 25
+ds_factor: 1
 inference: true
 postprocess: true
 pass_plot_seed: 321906282
 chunk_sec: 1728000 # 20 days
-chunk_ind: 0
+dense_mass: false
