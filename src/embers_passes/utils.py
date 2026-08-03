@@ -27,9 +27,17 @@ def load_config(config_path: str) -> argparse.Namespace:
         "mix_model": False,
         "jackknife": False,
         "jackknife_mode": "time",
-        "jackknife_half": 0,
+        "jackknife_chunk": 0,
         "jackknife_key": 224007541,
-        "ortho_knots": False
+        "ortho_knots": False,
+        "svi": False,
+        "enforce_boresight": False,
+        "ds_factor": 1,
+        "inference": True,
+        "postprocess": False,
+        "pass_plot_seed": 321906282,
+        "chunk_sec": 1728000, # 20 days,
+        "dense_mass": False
     }
 
     with open(config_path, "r") as f:
@@ -57,6 +65,7 @@ def write_configs(
     tiles: list = None,
     pols: list = None,
     jackknives: list = None,
+    Nchunk: int = 4,
 ) -> None:
     """
     Write one YAML config file per (tile, pol) combination.
@@ -85,7 +94,7 @@ def write_configs(
     product_args = [tiles, pols]
     if jackknives is not None:
         product_args.append(jackknives)
-        product_args.append([0, 1])
+        product_args.append(list(range(Nchunk)))
 
     for param_tuple in itertools.product(*product_args):
         key = random.randint(0, JAX_KEY_MAX)
@@ -100,14 +109,14 @@ def write_configs(
         }
         filename = f"{outdir}/config_tile{tile}_{pol}"
         if jackknives is not None:
-            jk_mode, jk_half = param_tuple[2:]
+            jk_mode, jk_chunk = param_tuple[2:]
             jk_key =  random.randint(0, JAX_KEY_MAX)
             config["jackknife"] = True
             config["jackknife_mode"] = jk_mode
-            config["jackknife_half"] = jk_half
+            config["jackknife_chunk"] = jk_chunk
             config["jackknife_key"] = jk_key
 
-            filename += f"jk{jk_mode}_half{jk_half}"
+            filename += f"jk{jk_mode}_half{jk_chunk}"
 
         filename += ".yaml"
         with open(filename, "w") as f:
