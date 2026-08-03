@@ -37,7 +37,8 @@ def load_config(config_path: str) -> argparse.Namespace:
         "postprocess": False,
         "pass_plot_seed": 321906282,
         "chunk_sec": 1728000, # 20 days,
-        "dense_mass": False
+        "dense_mass": False,
+        "svi_key": 276346727
     }
 
     with open(config_path, "r") as f:
@@ -99,12 +100,14 @@ def write_configs(
     for param_tuple in itertools.product(*product_args):
         key = random.randint(0, JAX_KEY_MAX)
         pass_plot_seed = random.randint(0, JAX_KEY_MAX) # Same max for numpy
+        svi_key = random.randint(0, JAX_KEY_MAX)
         tile, pol = param_tuple[:2]
         config = {
             **base_config,
             "tile": tile,
             "pol": pol,
             "key": key,
+            "svi_key": svi_key,
             "pass_plot_seed": pass_plot_seed
         }
         filename = f"{outdir}/config_tile{tile}_{pol}"
