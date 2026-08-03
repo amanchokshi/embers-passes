@@ -40,6 +40,7 @@ dependencies = [
     "scipy>=1.17",
     "zarr>=3",
     "corner>=2.2.3",
+    "mwa-jaxbeam>=0.1.0",
 ]
 
 [project.urls]
