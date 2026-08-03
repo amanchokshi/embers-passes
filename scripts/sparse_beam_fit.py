@@ -678,8 +678,7 @@ if __name__ == "__main__":
 
             
         else:
-            kernel = NUTS(model, dense_mass=args.dense_mass,
-                          init_strategy=init_to_value(values=params))
+            kernel = NUTS(model, dense_mass=args.dense_mass)
             mcmc = MCMC(
                 kernel, 
                 num_warmup=args.num_warmup, 
