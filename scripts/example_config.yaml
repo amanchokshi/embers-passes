@@ -29,3 +29,4 @@ chunk_sec: 1728000 # 20 days
 dense_mass: false
 double_svi: false
 svi_key: 276346727
+learning_rate: 0.1

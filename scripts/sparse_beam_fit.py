@@ -545,7 +545,7 @@ if __name__ == "__main__":
             to debias the posterior of the scale parameters. 
             """
             guide = AutoLaplaceApproximation(model)
-            svi = SVI(model, guide, numpyro.optim.Adam(1), loss=Trace_ELBO())
+            svi = SVI(model, guide, numpyro.optim.Adam(args.learning_rate), loss=Trace_ELBO())
             svi_result = svi.run(
                 random.key(args.svi_key), 
                 args.num_warmup, 
