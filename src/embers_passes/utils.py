@@ -458,7 +458,7 @@ def bin_chunk(
             median_sem_map[pixel] = filtered_median_mad / np.sqrt(filtered_values.size)
         else:
             counts = np.asarray(counts, dtype=int)
-            count_map[pixel] = int(counts.sum())
+            count_map[pixel] = int(counts.sum()) # total counts in this pixel from all passes
 
             if values:
                 mads = np.asarray(mads, dtype=float)
@@ -474,7 +474,9 @@ def bin_chunk(
                     scale="normal",
                     nan_policy="omit",
                 )
-                median_sem_map[pixel] = median_of_medians_mad / np.sqrt(len(values))
+                sum_of_sq_counts = int(np.sum(counts**2))
+                median_sem_map[pixel] = median_of_medians_mad * np.sqrt(sum_of_sq_counts) / count_map[pixel]
+                #median_sem_map[pixel] = median_of_medians_mad / np.sqrt(len(values))
     return median_map, count_map, mad_map, median_sem_map
 
 def healpix_to_pyuvdata(
