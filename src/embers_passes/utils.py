@@ -489,20 +489,7 @@ def healpix_to_pyuvdata(
     zenith angles and azimuths in the PyUVData East-to-North convention.
     """
     healpix_map = np.asarray(healpix_map, dtype=float)
-    npix = hp.nside2npix(nside)
-
-    pixel_indices = np.arange(npix, dtype=int)
-
-    # Convert HEALPix pixel indices to zenith angle and azimuth in the
-    # original North-to-East convention.
-    za_rad_ne, az_rad_ne = hp.pix2ang(
-        nside,
-        pixel_indices,
-        nest=False,
-    )
-
-    # Retain only pixels whose centres lie above the horizon.
-    above_horizon = za_rad_ne < np.pi / 2.0
+    za_rad_ne, az_rad_ne, above_horizon = get_above_horizon(nside)
 
     pixel_values = healpix_map[above_horizon]
     za_rad_ne = za_rad_ne[above_horizon]
@@ -522,3 +509,35 @@ def healpix_to_pyuvdata(
         za_rad_pyuvdata,
         az_rad_pyuvdata,
     )
+
+def get_above_horizon(nside):
+    """
+    Get the zenith angles, azimuths (in North-to-East) of HEALPix pixels, as well
+    as a boolean array for whether the pixel is above the horizon.
+
+    Parameters:
+        nside (int)
+            NSIDE parameter of the HEALPix map.
+    Returns:
+        za_rad_ne (array)
+            Zenith angles of pixels
+        az_rad_ne (array)
+            Azimuths of pixels in North-to-East
+        above_horizon (array)
+            Boolean array where True means the pixel has zenith angle greater than 0.
+    """
+    npix = hp.nside2npix(nside)
+
+    pixel_indices = np.arange(npix, dtype=int)
+
+    # Convert HEALPix pixel indices to zenith angle and azimuth in the
+    # original North-to-East convention.
+    za_rad_ne, az_rad_ne = hp.pix2ang(
+        nside,
+        pixel_indices,
+        nest=False,
+    )
+
+    # Retain only pixels whose centres lie above the horizon.
+    above_horizon = za_rad_ne < np.pi / 2.0
+    return za_rad_ne,az_rad_ne,above_horizon
