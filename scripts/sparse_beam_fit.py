@@ -2,8 +2,8 @@ from pathlib import Path
 from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
     make_disk_mask, make_flat_index, make_constraint_info, inject_pivot, \
-    eval_spline, eval_spline_samples, chunk_passes, chunks_to_healpix_counts, \
-    healpix_to_pyuvdata, bin_chunk, prep_mwa_beam, get_pol_ind, get_res, to_lin, \
+    chunk_passes, healpix_to_pyuvdata, bin_chunk, prep_mwa_beam, get_pol_ind,\
+    get_res
     
 
 import numpy as np
