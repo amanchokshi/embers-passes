@@ -9,6 +9,7 @@ from scipy.stats import median_abs_deviation as mad
 import healpy as hp
 
 from pyuvdata import UVBeam
+import healpy as hp
 
 def load_config(config_path: str) -> argparse.Namespace:
     """
@@ -631,3 +632,33 @@ def to_db(lin):
     Convert a quantity in linear units to decibels.
     """
     return 10 * np.log10(lin)
+
+def fill_map(reduced_map, npix, inds_kept):
+    """
+    Fills a HEALPix map of size npix from a reduced map assuming the user supplies
+    which indices into a HEALPix map of length npix were _kept_ to make the 
+    reduced map.
+
+    Parameters
+    ----------
+    reduced_map : array_like
+        The reduced (subset) map values, with length equal to len(inds_kept).
+    npix : int
+        The number of pixels in the full HEALPix map to reconstruct.
+    inds_kept : array_like
+        Indices into the full-length (npix) HEALPix map indicating which
+        pixels were kept to form `reduced_map`. Must have the same length
+        as `reduced_map`, and entries correspond elementwise (i.e.
+        `reduced_map[i]` is the value at pixel `inds_kept[i]`).
+
+    Returns
+    -------
+    filled_map : ndarray
+        A HEALPix map of length npix, with `filled_map[inds_kept]` set to
+        `reduced_map` and all other pixels set to `hp.UNSEEN`.
+    """
+
+    filled_map = np.full(npix, hp.UNSEEN)
+    filled_map[inds_kept] = reduced_map
+
+    return filled_map
