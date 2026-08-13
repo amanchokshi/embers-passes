@@ -3,7 +3,7 @@ from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     make_knots_from_grid, load_config, run_diagnostics, scatter_coeffs, \
     make_disk_mask, make_flat_index, make_constraint_info, inject_pivot, \
     eval_spline, eval_spline_samples, chunk_passes, chunks_to_healpix_counts, \
-    healpix_to_pyuvdata, bin_chunk
+    healpix_to_pyuvdata, bin_chunk, prep_mwa_beam, get_pol_ind, get_res
 
 import numpy as np
 
@@ -41,19 +41,6 @@ def altaz_to_rad(az_deg, alt_deg):
     za_rad = np.deg2rad(90. - alt_deg)
     
     return az_rad, za_rad
-
-def get_res(az_rad, za_rad, power_db):
-    """
-    Get the residual beam in dB (so the log of the ratio) between the measured
-    power and the simulated model power at the az_deg and alt_deg in question.
-    """
-    # FIXME: Uses beam as global
-    model_beam = beam.interp(az_array=az_rad, za_array=za_rad)[0][0,pol_ind,0].real # It's a copol power beam
-    model_beam_db = 10 * np.log10(model_beam) 
-    assert np.all(np.isfinite(model_beam_db))
-    
-    res = power_db - model_beam_db
-    return res, model_beam
 
 # Good candidate for some util functions for the module -- should get rid of global variable dependence
 def get_pass_subset_cut(passes, slc=slice(None), db_cut=3):
@@ -266,25 +253,8 @@ if __name__ == "__main__":
     import arviz as az
 
     # FIXME: Hardcode -- only zenith
-    delays = np.zeros(16, dtype=int)
-    delays = np.array([delays, delays])
-
-    beam = UVBeam.from_file(
-        args.mwa_beamfile,
-        freq_range=[136e6, 138e6],
-        delays=delays,
-        za_range=(0,90)
-        )
-    beam.peak_normalize()
-    beam.efield_to_power()
-
-
-    pol_ind_dict = {
-        "XX": np.where(beam.polarization_array == -5)[0][0],
-        "YY": np.where(beam.polarization_array == -6)[0][0]
-    }
-    assert args.pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
-    pol_ind = pol_ind_dict[args.pol]
+    beam = prep_mwa_beam(args.mwa_beamfile)
+    pol_ind = get_pol_ind(beam, args.pol)
 
     subdir = f"rf{args.rf_num}/S{args.tile}/{args.pol}"
     if args.jackknife:
@@ -320,9 +290,6 @@ if __name__ == "__main__":
     else:
         chunk = list(range(args.num_pass))
 
-    # alt_deg, az_deg, power_db = get_pass_subset(passes, args.ds_factor, pass_slice)
-    # az_rad, za_rad = altaz_to_rad(az_deg, alt_deg)
-    # res, model_beam = get_res(az_rad, za_rad, power_db)
     median_map, count_map, mad_map, median_sem_map = bin_chunk(
         passes, chunk
     )
@@ -361,7 +328,7 @@ if __name__ == "__main__":
         dat_coord_1 = za_rad
         dat_coord_2 = az_rad
 
-    res, model_beam = get_res(az_rad, za_rad, median_values)
+    res, model_beam = get_res(az_rad, za_rad, median_values, pol_ind, beam)
 
     class SkewLogistic(dist.Distribution, metaclass=dist.distribution.DistributionMeta):
         """

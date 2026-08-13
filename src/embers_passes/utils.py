@@ -8,6 +8,8 @@ import numpy as np
 from scipy.stats import median_abs_deviation as mad
 import healpy as hp
 
+from pyuvdata import UVBeam
+
 def load_config(config_path: str) -> argparse.Namespace:
     """
     Load configuration from a YAML file and return a Namespace object.
@@ -541,3 +543,79 @@ def get_above_horizon(nside):
     # Retain only pixels whose centres lie above the horizon.
     above_horizon = za_rad_ne < np.pi / 2.0
     return za_rad_ne,az_rad_ne,above_horizon
+
+def prep_mwa_beam(mwa_beamfile):
+    """
+    Load in pyuvdata-compatible MWA beamfile at ORBCOMM frequency for zenith
+    pointing, and make it a peak-normalized power beam.
+
+    Parameters:
+        mwa_beamfile
+            Path to the file
+
+    Returns:
+        beam
+            UVBeam object containing the beam data
+    """
+    # Hardcoded to zenith
+    delays = np.zeros(16, dtype=int)
+    delays = np.array([delays, delays])
+
+    beam = UVBeam.from_file(
+    mwa_beamfile,
+    freq_range=[136e6, 138e6],
+    delays=delays,
+    za_range=(0,90)
+    )
+    beam.peak_normalize()
+    beam.efield_to_power()
+    return beam
+
+def get_res(az_rad, za_rad, power_db, pol_ind, beam):
+    """
+    Get the residual beam in dB (so the log of the ratio) between the measured
+    power and the simulated model power at the az_deg and alt_deg in question.
+
+    Parameters
+    ----------
+    az_rad : array_like
+        Azimuth coordinate(s) in radians, using the East->North convention
+        (i.e. measured eastward from North).
+    za_rad : array_like
+        Zenith angle coordinate(s) in radians, same shape as `az_rad`.
+    power_db : array_like
+        Measured power in dB, same shape as `az_rad`, evaluated at the
+        corresponding az/za coordinates.
+    pol_ind : int
+        Index of the polarization to select from the beam's polarization
+        axis (assumed to be a co-polarized power beam).
+    beam : UVBeam
+        UVBeam object containing the simulated beam model to interpolate
+        and compare against the measured power.
+
+    Returns
+    -------
+    res : ndarray
+        Residual power in dB (measured minus model) at each point above
+        the horizon, i.e. where `za_rad <= pi/2`.
+    model_beam : ndarray
+        Interpolated model beam power (linear units, not dB) at each
+        point above the horizon.
+    """
+    above_horizon = za_rad <= np.pi / 2
+
+    model_beam = beam.interp(az_array=az_rad[above_horizon], za_array=za_rad[above_horizon])[0][0,pol_ind,0].real # It's a copol power beam
+    model_beam_db = 10 * np.log10(model_beam) 
+    assert np.all(np.isfinite(model_beam_db))
+    
+    res = power_db[above_horizon] - model_beam_db
+    return res, model_beam
+
+def get_pol_ind(beam, pol):
+    pol_ind_dict = {
+    "XX": np.where(beam.polarization_array == -5)[0][0],
+    "YY": np.where(beam.polarization_array == -6)[0][0]
+}
+    assert pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
+    pol_ind = pol_ind_dict[pol]
+    return pol_ind
