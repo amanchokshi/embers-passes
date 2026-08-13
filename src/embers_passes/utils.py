@@ -619,3 +619,15 @@ def get_pol_ind(beam, pol):
     assert pol in pol_ind_dict.keys(), "Invalid pol; must be XX or YY"
     pol_ind = pol_ind_dict[pol]
     return pol_ind
+
+def to_lin(db):
+    """
+    Convert a quantity in decibels to linear units.
+    """
+    return 10**(db/10)
+
+def to_db(lin):
+    """
+    Convert a quantity in linear units to decibels.
+    """
+    return 10 * np.log10(lin)
