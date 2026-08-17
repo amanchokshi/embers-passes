@@ -43,6 +43,7 @@ dependencies = [
     "mwa-jaxbeam>=0.2.0",
     "blackjax>=1.6.2",
     "scikit-learn>=1.9.0",
+    "pyuvdata>=3.2.6",
 ]
 
 [project.urls]
