@@ -641,7 +641,7 @@ requires-dist = [
     { name = "jupyterlab", marker = "extra == 'dev'", specifier = ">=4.5.6" },
     { name = "matplotlib", specifier = ">=3" },
     { name = "mwa-hyperbeam", marker = "extra == 'dev'", specifier = ">=0.10" },
-    { name = "mwa-jaxbeam", specifier = ">=0.1.0" },
+    { name = "mwa-jaxbeam", specifier = ">=0.2.0" },
     { name = "numpy", specifier = ">=2,<2.4" },
     { name = "numpyro", specifier = ">=0.21" },
     { name = "pymc", specifier = ">=6" },
@@ -1649,15 +1649,15 @@ wheels = [
 
 [[package]]
 name = "mwa-jaxbeam"
-version = "0.1.0"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jax" },
     { name = "numpy" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4e/5e/3541331c51fe7d59abde4e7e1e9a781464c4bc205f47808f16c55759a084/mwa_jaxbeam-0.1.0.tar.gz", hash = "sha256:68ea3387b145d323a61101b501ae3f4f7f159997977766402763c212beeb0808", size = 1322412, upload-time = "2026-07-31T20:02:15.349Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/84/e1/a5d53b80af8e81fb5bf5c5c02b4a71f10a7138dba4d065447692e5924c24/mwa_jaxbeam-0.2.0.tar.gz", hash = "sha256:2ed9978b54cc9a1630fd27c89ca079f4e3a01334089e7d47388ffa6536cba4ed", size = 1323695, upload-time = "2026-08-17T01:36:25.905Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/ef/ad905e0dc08eee3fd1e1219222204b551aa3d1712fc7165057ced463bfd3/mwa_jaxbeam-0.1.0-py3-none-any.whl", hash = "sha256:5de9314a7a4097e9901e9bcd1520121e65dc6aa3c4aae578c3d764ea764d26aa", size = 169936, upload-time = "2026-07-31T20:02:13.172Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/a6/386d7bdd313e425e1f950b5e828db026a92d515805722f4428b974d5b416/mwa_jaxbeam-0.2.0-py3-none-any.whl", hash = "sha256:28462e93111d2efb226ad1d2ab119b3280966c2c2c2ede19edbb086ae5530dd7", size = 170063, upload-time = "2026-08-17T01:36:23.133Z" },
 ]
 
 [[package]]

@@ -40,7 +40,7 @@ dependencies = [
     "scipy>=1.17",
     "zarr>=3",
     "corner>=2.2.3",
-    "mwa-jaxbeam>=0.1.0",
+    "mwa-jaxbeam>=0.2.0",
     "blackjax>=1.6.2",
     "scikit-learn>=1.9.0",
 ]
