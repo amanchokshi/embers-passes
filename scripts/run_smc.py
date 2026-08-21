@@ -128,14 +128,20 @@ def main():
     if args.chunk_index >= len(chunks):
         raise IndexError(f"Chunk {args.chunk_index} requested; only {len(chunks)} exist.")
 
-    median_maps, _, mad_maps, median_sem_maps = chunks_to_healpix_counts(
+    median_maps, count_maps, mad_maps, median_sem_maps = chunks_to_healpix_counts(
         passes,
         chunks,
         decimate=1,
         nside=args.nside,
     )
 
-    data_map = np.asarray(median_maps[args.chunk_index], dtype=np.float32)
+    data_map = np.asarray(
+        median_maps[args.chunk_index],
+        dtype=np.float32,
+    )
+    count_map = np.asarray(
+        count_maps[args.chunk_index],
+    )
     error_map = np.sqrt(
         np.asarray(mad_maps[args.chunk_index], dtype=np.float32) ** 2
         + np.asarray(median_sem_maps[args.chunk_index], dtype=np.float32) ** 2
@@ -144,7 +150,12 @@ def main():
     npix = hp.nside2npix(args.nside)
     pixel_indices = np.arange(npix)
     za_hpx, az_hpx = hp.pix2ang(args.nside, pixel_indices)
-    visible = za_hpx <= np.pi / 2
+
+    visible = (
+        (za_hpx <= np.pi / 2)
+        & (count_map >= 3)
+    )
+
     visible_indices = np.flatnonzero(visible)
 
     reference_power = np.full(npix, np.nan, dtype=np.float32)
@@ -152,7 +163,6 @@ def main():
         aee.power(
             az_rad=az_hpx[visible],
             za_rad=za_hpx[visible],
-            excitations=np.ones((2, 16), dtype=np.complex64),
             normalize=True,
         )[pol],
         dtype=np.float32,
@@ -185,18 +195,18 @@ def main():
     # ------------------------------------------------------------------
 
     @jax.jit
-    def predict_beam_db(excitation_pol):
+    def predict_beam_db(dipole_gains_pol):
         fixed = jnp.ones(16, dtype=jnp.complex64)
-        excitation_pol = excitation_pol.astype(jnp.complex64)
-        excitations = (
-            jnp.stack([excitation_pol, fixed])
+        dipole_gains_pol = dipole_gains_pol.astype(jnp.complex64)
+        dipole_gains = (
+            jnp.stack([dipole_gains_pol, fixed])
             if pol == 0
-            else jnp.stack([fixed, excitation_pol])
+            else jnp.stack([fixed, dipole_gains_pol])
         )
         power = aee.power(
             az_rad=az_visible,
             za_rad=za_visible,
-            excitations=excitations,
+            dipole_gains=dipole_gains,
             normalize=True,
         )[pol, comparison_visible_indices]
         power = jnp.maximum(power, jnp.finfo(power.dtype).tiny)

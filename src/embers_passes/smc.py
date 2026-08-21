@@ -125,22 +125,22 @@ def build_amplitude_models(
 
     concentration = jnp.full(n_dipoles, dirichlet_alpha, dtype=dtype)
 
-    def sample_excitations():
-        fraction = numpyro.sample("excitation_fraction", dist.Dirichlet(concentration))
+    def sample_dipole_gains():
+        fraction = numpyro.sample("dipole_gain_fraction", dist.Dirichlet(concentration))
         amplitude = n_dipoles * fraction
         phase = jnp.zeros(n_dipoles, dtype=dtype)
-        excitation = amplitude.astype(jnp.complex64)
-        numpyro.deterministic("excitation_amplitude", amplitude)
-        numpyro.deterministic("excitation_phase", phase)
-        numpyro.deterministic("excitation_complex", excitation)
-        return excitation
+        gain = amplitude.astype(jnp.complex64)
+        numpyro.deterministic("dipole_gain_amplitude", amplitude)
+        numpyro.deterministic("dipole_gain_phase", phase)
+        numpyro.deterministic("dipole_gain_complex", gain)
+        return gain
 
     def prior_model():
-        sample_excitations()
+        sample_dipole_gains()
 
     def full_model(observed_db, observed_sigma_db):
-        excitation = sample_excitations()
-        model_db = predict_beam_db(excitation)
+        dipole_gains = sample_dipole_gains()
+        model_db = predict_beam_db(dipole_gains)
         numpyro.deterministic("model_db", model_db)
         numpyro.sample(
             "data",
@@ -165,26 +165,26 @@ def build_complex_models(
     phase_loc = jnp.zeros(n_dipoles - 1, dtype=dtype)
     phase_concentration = jnp.full(n_dipoles - 1, phase_kappa, dtype=dtype)
 
-    def sample_excitations():
-        fraction = numpyro.sample("excitation_fraction", dist.Dirichlet(concentration))
+    def sample_dipole_gains():
+        fraction = numpyro.sample("dipole_gain_fraction", dist.Dirichlet(concentration))
         relative_phase = numpyro.sample(
             "relative_phase",
             dist.VonMises(phase_loc, phase_concentration).to_event(1),
         )
         amplitude = n_dipoles * fraction
         phase = jnp.concatenate([jnp.zeros(1, dtype=dtype), relative_phase])
-        excitation = (amplitude * jnp.exp(1j * phase)).astype(jnp.complex64)
-        numpyro.deterministic("excitation_amplitude", amplitude)
-        numpyro.deterministic("excitation_phase", phase)
-        numpyro.deterministic("excitation_complex", excitation)
-        return excitation
+        gain = (amplitude * jnp.exp(1j * phase)).astype(jnp.complex64)
+        numpyro.deterministic("dipole_gain_amplitude", amplitude)
+        numpyro.deterministic("dipole_gain_phase", phase)
+        numpyro.deterministic("dipole_gain_complex", gain)
+        return gain
 
     def prior_model_base():
-        sample_excitations()
+        sample_dipole_gains()
 
     def full_model_base(observed_db, observed_sigma_db):
-        excitation = sample_excitations()
-        model_db = predict_beam_db(excitation)
+        dipole_gains = sample_dipole_gains()
+        model_db = predict_beam_db(dipole_gains)
         numpyro.deterministic("model_db", model_db)
         numpyro.sample(
             "data",
