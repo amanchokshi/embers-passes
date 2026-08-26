@@ -46,6 +46,18 @@ def parse_args():
     parser.add_argument("--chunk-days", type=float, default=200.0)
     parser.add_argument("--pointing", type=int, default=0)
     parser.add_argument("--nside", type=int, default=32)
+    parser.add_argument(
+        "--single-pass-z-cut",
+        type=float,
+        default=None,
+        help=(
+            "Optionally mask anomalously low-uncertainty pixels with exactly "
+            "one contributing pass. The cut is applied to log10(total sigma) "
+            "using a pooled robust median/MAD across all chunks. For example, "
+            "--single-pass-z-cut -3 applies a 3-sigma lower-tail cut. "
+            "Default: disabled."
+        ),
+    )
 
     # Execution configuration.  These are deliberately NOT baked into the
     # scientific SMC module.
@@ -166,6 +178,55 @@ def package_fit(smc, model, result, n_data: int) -> dict:
     return packed
 
 
+def contributing_pass_count_map(passes, chunk, nside: int):
+    """Return number of independent passes contributing to each HEALPix pixel."""
+
+    import healpy as hp
+    import numpy as np
+
+    npix = hp.nside2npix(nside)
+    n_pass_map = np.zeros(npix, dtype=np.int32)
+
+    for pass_index in chunk:
+        pass_record = passes[pass_index]
+
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
+
+        if not (
+            alt_deg.shape
+            == az_deg.shape
+            == power_db.shape
+        ):
+            raise ValueError(
+                "alt_deg, az_deg, and power_db must have matching shapes."
+            )
+
+        valid = (
+            np.isfinite(alt_deg)
+            & np.isfinite(az_deg)
+            & np.isfinite(power_db)
+            & (alt_deg > 0.0)
+        )
+
+        if not np.any(valid):
+            continue
+
+        theta = np.radians(90.0 - alt_deg[valid])
+        phi = np.radians(az_deg[valid])
+
+        pixels = hp.ang2pix(
+            nside,
+            theta,
+            phi,
+        )
+
+        n_pass_map[np.unique(pixels)] += 1
+
+    return n_pass_map
+
+
 def main():
     args = parse_args()
 
@@ -180,6 +241,11 @@ def main():
         raise ValueError("devices must be positive.")
     if args.particles_per_device < 1:
         raise ValueError("particles_per_device must be positive.")
+    if args.single_pass_z_cut is not None and args.single_pass_z_cut >= 0:
+        raise ValueError(
+            "--single-pass-z-cut must be negative; "
+            "for example, --single-pass-z-cut -3."
+        )
 
     n_particles = (
         args.particles
@@ -270,6 +336,93 @@ def main():
         nside=args.nside,
     )
 
+    n_pass_maps = [
+        contributing_pass_count_map(
+            passes,
+            chunk,
+            args.nside,
+        )
+        for chunk in chunks
+    ]
+
+    single_pass_cut_metadata = {
+        "enabled": args.single_pass_z_cut is not None,
+        "robust_z_cut": args.single_pass_z_cut,
+        "pooled_n_single_pass_pixels": 0,
+        "median_log10_sigma": None,
+        "robust_sigma_log10_sigma": None,
+        "sigma_cut_db": None,
+    }
+
+    if args.single_pass_z_cut is not None:
+        pooled_log_sigma = []
+
+        for i in range(len(chunks)):
+            counts_i = np.asarray(count_maps[i])
+            n_pass_i = np.asarray(n_pass_maps[i])
+
+            sigma_i = np.sqrt(
+                np.asarray(mad_maps[i], dtype=np.float64) ** 2
+                + np.asarray(median_sem_maps[i], dtype=np.float64) ** 2
+            )
+
+            valid_single = (
+                (counts_i >= 3)
+                & (n_pass_i == 1)
+                & np.isfinite(sigma_i)
+                & (sigma_i > 0)
+            )
+
+            pooled_log_sigma.append(np.log10(sigma_i[valid_single]))
+
+        pooled_log_sigma = np.concatenate(pooled_log_sigma)
+
+        if pooled_log_sigma.size < 10:
+            raise ValueError(
+                "Too few valid single-pass pixels to define the robust "
+                f"uncertainty cut ({pooled_log_sigma.size} found)."
+            )
+
+        median_log_sigma = float(np.median(pooled_log_sigma))
+        robust_sigma_log = float(
+            1.482602218505602
+            * np.median(
+                np.abs(
+                    pooled_log_sigma
+                    - median_log_sigma
+                )
+            )
+        )
+
+        if not np.isfinite(robust_sigma_log) or robust_sigma_log <= 0:
+            raise ValueError(
+                "Could not estimate a finite positive robust scatter for "
+                "single-pass log uncertainties."
+            )
+
+        log_sigma_cut = (
+            median_log_sigma
+            + args.single_pass_z_cut * robust_sigma_log
+        )
+        sigma_cut_db = float(10.0 ** log_sigma_cut)
+
+        single_pass_cut_metadata.update(
+            {
+                "pooled_n_single_pass_pixels": int(pooled_log_sigma.size),
+                "median_log10_sigma": median_log_sigma,
+                "robust_sigma_log10_sigma": robust_sigma_log,
+                "sigma_cut_db": sigma_cut_db,
+            }
+        )
+
+        print("\nSingle-pass low-uncertainty quality cut")
+        print("---------------------------------------")
+        print(f"Pooled single-pass pixels: {pooled_log_sigma.size}")
+        print(f"Median log10(sigma):       {median_log_sigma:.6f}")
+        print(f"Robust scatter:            {robust_sigma_log:.6f}")
+        print(f"Robust z cut:              {args.single_pass_z_cut:.2f}")
+        print(f"Equivalent sigma cut:      {sigma_cut_db:.6f} dB")
+
     data_map = np.asarray(
         median_maps[args.chunk_index],
         dtype=np.float32,
@@ -279,6 +432,69 @@ def main():
         np.asarray(mad_maps[args.chunk_index], dtype=np.float32) ** 2
         + np.asarray(median_sem_maps[args.chunk_index], dtype=np.float32) ** 2
     ).astype(np.float32)
+
+    n_pass_map = np.asarray(
+        n_pass_maps[args.chunk_index],
+        dtype=np.int32,
+    )
+
+    single_pass_robust_z = np.full(
+        count_map.shape,
+        np.nan,
+        dtype=np.float64,
+    )
+    single_pass_mask = np.zeros(
+        count_map.shape,
+        dtype=bool,
+    )
+
+    if args.single_pass_z_cut is not None:
+        one_pass_valid = (
+            (count_map >= 3)
+            & (n_pass_map == 1)
+            & np.isfinite(error_map)
+            & (error_map > 0)
+        )
+
+        single_pass_robust_z[one_pass_valid] = (
+            (
+                np.log10(error_map[one_pass_valid])
+                - single_pass_cut_metadata["median_log10_sigma"]
+            )
+            / single_pass_cut_metadata[
+                "robust_sigma_log10_sigma"
+            ]
+        )
+
+        single_pass_mask = (
+            one_pass_valid
+            & (single_pass_robust_z < args.single_pass_z_cut)
+        )
+
+    masked_indices = np.flatnonzero(single_pass_mask)
+
+    print(
+        f"\nSingle-pass uncertainty mask: "
+        f"{masked_indices.size} pixels removed "
+        f"from chunk {args.chunk_index}"
+    )
+
+    if masked_indices.size:
+        print(
+            "pixel       count  passes       sigma[dB]       robust_z"
+        )
+        print(
+            "---------------------------------------------------------"
+        )
+
+        for pixel in masked_indices:
+            print(
+                f"{pixel:5d} "
+                f"{int(count_map[pixel]):11d} "
+                f"{int(n_pass_map[pixel]):7d} "
+                f"{float(error_map[pixel]):15.6e} "
+                f"{float(single_pass_robust_z[pixel]):12.3f}"
+            )
 
     npix = hp.nside2npix(args.nside)
     pixel_indices = np.arange(npix)
@@ -299,6 +515,7 @@ def main():
 
     valid = (
         visible
+        & ~single_pass_mask
         & np.isfinite(data_map)
         & np.isfinite(error_map)
         & (error_map > 0)
@@ -455,6 +672,8 @@ def main():
             "chunk_center_unix": float(bin_centers[args.chunk_index]),
             "nside": args.nside,
             "n_comparison_pixels": int(comparison_indices.size),
+            "single_pass_uncertainty_cut": single_pass_cut_metadata,
+            "n_single_pass_masked": int(masked_indices.size),
             "dirichlet_alpha": args.dirichlet_alpha,
             "phase_prior_std_deg": args.phase_prior_std_deg,
             "phase_kappa": phase_kappa,
@@ -472,6 +691,10 @@ def main():
             "data_map": data_map,
             "error_map": error_map,
             "count_map": count_map,
+            "n_pass_map": n_pass_map,
+            "single_pass_robust_z": single_pass_robust_z.astype(np.float32),
+            "single_pass_mask": single_pass_mask,
+            "masked_indices": masked_indices.astype(np.int32),
             "comparison_indices": comparison_indices.astype(np.int32),
         },
         "nominal": {
@@ -496,6 +719,14 @@ def main():
 
     print(f"\nSaved: {output_path}")
     print(f"Comparison pixels: {comparison_indices.size}")
+
+    if args.single_pass_z_cut is not None:
+        print(
+            f"Single-pass uncertainty mask: "
+            f"{masked_indices.size} pixels "
+            f"(z < {args.single_pass_z_cut:g}, "
+            f"sigma_cut={single_pass_cut_metadata['sigma_cut_db']:.4f} dB)"
+        )
 
     bic_parts = [f"nominal={result['nominal']['bic']:.1f}"]
     for kind in kinds:
