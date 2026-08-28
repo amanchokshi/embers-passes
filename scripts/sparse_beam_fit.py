@@ -7,6 +7,7 @@ from embers_passes import PassFile, SphericalSpline, eval_spline_batch, \
     
 
 import numpy as np
+import healpy as hp
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import SymLogNorm
@@ -66,6 +67,226 @@ def prep_spline_params(beam, ortho_knots=False, spice_variant=0):
         t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(theta_param, phi_param)
         Nparam = n_th * n_ph
         return t_theta, t_phi, p, q, n_th, n_ph, Nparam
+
+def contributing_pass_count_map(passes, chunk, nside):
+    """
+    Number of independent passes contributing to each HEALPix pixel.
+
+    A pass contributes at most once to a given pixel, regardless of how many
+    samples from that pass land in the pixel.
+    """
+    npix = hp.nside2npix(nside)
+    n_pass_map = np.zeros(npix, dtype=np.int32)
+
+    for pass_index in chunk:
+        pass_record = passes[pass_index]
+
+        alt_deg = np.asarray(pass_record.alt_deg, dtype=float)
+        az_deg = np.asarray(pass_record.az_deg, dtype=float)
+        power_db = np.asarray(pass_record.power_db, dtype=float)
+
+        if not (
+            alt_deg.shape
+            == az_deg.shape
+            == power_db.shape
+        ):
+            raise ValueError(
+                "alt_deg, az_deg, and power_db must have matching shapes."
+            )
+
+        valid = (
+            np.isfinite(alt_deg)
+            & np.isfinite(az_deg)
+            & np.isfinite(power_db)
+            & (alt_deg > 0.0)
+        )
+
+        if not np.any(valid):
+            continue
+
+        theta = np.radians(90.0 - alt_deg[valid])
+        phi = np.radians(az_deg[valid])
+
+        pixels = hp.ang2pix(
+            nside,
+            theta,
+            phi,
+        )
+
+        # Each independent pass counts only once per pixel.
+        n_pass_map[np.unique(pixels)] += 1
+
+    return n_pass_map
+
+def fit_single_pass_uncertainty_cut(
+    count_maps,
+    mad_maps,
+    median_sem_maps,
+    n_pass_maps,
+    min_count=3,
+    robust_z_cut=-3.0,
+):
+    """
+    Estimate a robust lower-tail uncertainty cut for single-pass pixels.
+
+    The distribution is defined in log10(sigma), pooling valid single-pass
+    pixels across all chunks.
+
+    Returns
+    -------
+    metadata : dict
+        Median/scatter of log10(sigma), robust-z threshold, and equivalent
+        sigma threshold in dB.
+    """
+    pooled_log_sigma = []
+
+    for count_map, mad_map, sem_map, n_pass_map in zip(
+        count_maps,
+        mad_maps,
+        median_sem_maps,
+        n_pass_maps,
+    ):
+        count_map = np.asarray(count_map)
+        n_pass_map = np.asarray(n_pass_map)
+
+        sigma = np.sqrt(
+            np.asarray(mad_map, dtype=np.float64) ** 2
+            + np.asarray(sem_map, dtype=np.float64) ** 2
+        )
+
+        valid_single = (
+            (count_map >= min_count)
+            & (n_pass_map == 1)
+            & np.isfinite(sigma)
+            & (sigma > 0)
+        )
+
+        pooled_log_sigma.append(
+            np.log10(sigma[valid_single])
+        )
+
+    pooled_log_sigma = np.concatenate(
+        pooled_log_sigma
+    )
+
+    if pooled_log_sigma.size < 10:
+        raise ValueError(
+            "Too few valid single-pass pixels to define a robust "
+            f"uncertainty cut ({pooled_log_sigma.size} found)."
+        )
+
+    median_log_sigma = np.median(
+        pooled_log_sigma
+    )
+
+    # Gaussian-equivalent scatter estimated from MAD.
+    robust_sigma_log = (
+        1.482602218505602
+        * np.median(
+            np.abs(
+                pooled_log_sigma
+                - median_log_sigma
+            )
+        )
+    )
+
+    if (
+        not np.isfinite(robust_sigma_log)
+        or robust_sigma_log <= 0
+    ):
+        raise ValueError(
+            "Could not estimate a finite positive robust scatter."
+        )
+
+    log_sigma_cut = (
+        median_log_sigma
+        + robust_z_cut * robust_sigma_log
+    )
+
+    sigma_cut_db = 10.0 ** log_sigma_cut
+
+    return {
+        "robust_z_cut": float(robust_z_cut),
+        "pooled_n_single_pass_pixels": int(
+            pooled_log_sigma.size
+        ),
+        "median_log10_sigma": float(
+            median_log_sigma
+        ),
+        "robust_sigma_log10_sigma": float(
+            robust_sigma_log
+        ),
+        "sigma_cut_db": float(
+            sigma_cut_db
+        ),
+    }
+
+def single_pass_low_uncertainty_mask(
+    count_map,
+    mad_map,
+    median_sem_map,
+    n_pass_map,
+    cut_metadata,
+    min_count=3,
+):
+    """
+    Flag anomalously low-uncertainty single-pass pixels.
+
+    Returns
+    -------
+    mask : bool array
+        True for pixels to exclude.
+    robust_z : float array
+        Robust z-score in log10(sigma); NaN elsewhere.
+    sigma : float array
+        Combined per-pixel uncertainty.
+    """
+    count_map = np.asarray(count_map)
+    n_pass_map = np.asarray(n_pass_map)
+
+    sigma = np.sqrt(
+        np.asarray(mad_map, dtype=np.float64) ** 2
+        + np.asarray(median_sem_map, dtype=np.float64) ** 2
+    )
+
+    one_pass_valid = (
+        (count_map >= min_count)
+        & (n_pass_map == 1)
+        & np.isfinite(sigma)
+        & (sigma > 0)
+    )
+
+    robust_z = np.full(
+        sigma.shape,
+        np.nan,
+        dtype=np.float64,
+    )
+
+    robust_z[one_pass_valid] = (
+        (
+            np.log10(
+                sigma[one_pass_valid]
+            )
+            - cut_metadata[
+                "median_log10_sigma"
+            ]
+        )
+        / cut_metadata[
+            "robust_sigma_log10_sigma"
+        ]
+    )
+
+    mask = (
+        one_pass_valid
+        & (
+            robust_z
+            < cut_metadata[
+                "robust_z_cut"
+            ]
+        )
+    )
+
+    return mask, robust_z, sigma
 
 
 if __name__ == "__main__":
@@ -132,6 +353,22 @@ if __name__ == "__main__":
     median_map, count_map, mad_map, median_sem_map = bin_chunk(
         passes, chunk
     )
+
+    n_pass_map = contributing_pass_count_map(
+        passes, chunk, nside=32
+    )
+
+    cut_metadata = fit_single_pass_uncertainty_cut(
+        [count_map], [mad_map], [median_sem_map], [n_pass_map]
+    )
+
+    mask, robust_z, sigma = single_pass_low_uncertainty_mask(
+        count_map, mad_map, median_sem_map, n_pass_map, cut_metadata
+    )
+
+    # No great way to pass this mask through healpix_to_pyuvdata -- set counts to 0
+    count_map[mask] = 0
+
     median_values, za_rad, az_rad = healpix_to_pyuvdata(median_map)
     count_values, _, _ = healpix_to_pyuvdata(count_map)
     mad_values, _, _ = healpix_to_pyuvdata(mad_map)
