@@ -402,16 +402,48 @@ def build_model_interface(
             logp = logp + _log_von_mises(relative_phase, phase_kappa_array)
         return logp
 
+    # @jax.jit
+    # def log_likelihood_flat(position):
+    #     _, _, _, _, gains = position_to_physical(position)
+    #     model_db = predict_beam_db(gains)
+    #     residual = (observed_db - model_db) / observed_sigma_db
+    #     return -0.5 * jnp.sum(
+    #         residual**2
+    #         + jnp.log(
+    #             jnp.asarray(2.0 * jnp.pi, dtype=dtype)
+    #             * observed_sigma_db**2
+    #         )
+    #     )
+
     @jax.jit
     def log_likelihood_flat(position):
         _, _, _, _, gains = position_to_physical(position)
         model_db = predict_beam_db(gains)
-        residual = (observed_db - model_db) / observed_sigma_db
-        return -0.5 * jnp.sum(
-            residual**2
+
+        residual = (
+            observed_db - model_db
+        ) / observed_sigma_db
+
+        scaled_residual = (
+            0.5
+            * jnp.asarray(jnp.pi, dtype=dtype)
+            * residual
+        )
+
+        log_cosh = (
+            jnp.logaddexp(
+                scaled_residual,
+                -scaled_residual,
+            )
+            - jnp.log(
+                jnp.asarray(2.0, dtype=dtype)
+            )
+        )
+
+        return -jnp.sum(
+            log_cosh
             + jnp.log(
-                jnp.asarray(2.0 * jnp.pi, dtype=dtype)
-                * observed_sigma_db**2
+                2.0 * observed_sigma_db
             )
         )
 
