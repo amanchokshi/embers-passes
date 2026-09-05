@@ -488,64 +488,6 @@ def inject_pivot(c_free, pivot_flat_idx, pivot_weight,
     return c_flat.at[pivot_flat_idx].set(c_pivot)
 
 
-# ---------------------------------------------------------------------------
-# Demo / smoke test
-# ---------------------------------------------------------------------------
-
-if __name__ == "__main__":
-    import numpy as np
-    from scipy.interpolate import RectBivariateSpline
-
-    jax.config.update("jax_enable_x64", True)
-    print("=== Spherical B-spline smoke test ===\n")
-
-    # Ground-truth: f(θ,φ) = sin²θ·cos(2φ)  smooth, zero at pole
-    theta_grid = np.linspace(0.05, np.pi / 2 - 0.05, 40)
-    phi_grid   = np.linspace(0.0,  2 * np.pi,         80, endpoint=False)
-    TH, PH     = np.meshgrid(theta_grid, phi_grid, indexing="ij")
-    Z          = np.sin(TH)**2 * np.cos(2 * PH)
-
-    rbs = RectBivariateSpline(theta_grid, phi_grid, Z, kx=3, ky=3)
-    spl = make_spherical_spline(rbs, dtype=jnp.float64)
-    print(f"Knot counts — θ: {len(spl.t_theta)}, φ: {len(spl.t_phi)}")
-    print(f"Coefficient grid: {spl.c.shape},  degree=({spl.p},{spl.q})\n")
-
-    rng     = np.random.default_rng(7)
-    N       = 8
-    th_test = jnp.array(rng.uniform(0.1, np.pi/2 - 0.1, N))
-    ph_test = jnp.array(rng.uniform(0.0, 2*np.pi,        N))
-
-    # ---- 1. Value accuracy ----
-    v_basis  = eval_spline_batch(spl, th_test, ph_test)
-    v_deboor = eval_spline_deboor_batch(spl, th_test, ph_test)
-    v_scipy  = rbs.ev(np.array(th_test), np.array(ph_test))
-    v_true   = np.sin(np.array(th_test))**2 * np.cos(2*np.array(ph_test))
-
-    print("Values (basis | deBoor | scipy | true | Δbasis-scipy):")
-    for i in range(N):
-        print(f"  [{i}]  {v_basis[i]:.8f}  {v_deboor[i]:.8f}  "
-              f"{v_scipy[i]:.8f}  {v_true[i]:.8f}  Δ={float(v_basis[i]-v_scipy[i]):.1e}")
-
-    # ---- 3. jit / vmap ----
-    jit_vals = jax.jit(eval_spline_batch)(spl, th_test, ph_test)
-    jit_debo = jax.jit(eval_spline_deboor_batch)(spl, th_test, ph_test)
-    jit_vals.block_until_ready(); jit_debo.block_until_ready()
-    print("\njit + vmap: OK")
-    print(f"  eval_spline_batch          → {jit_vals.shape}")
-    print(f"  eval_spline_deboor_batch   → {jit_debo.shape}")
-
-    # ---- 4. Higher-order differentiability (HMC needs this) ----
-    jac = jax.jit(
-        jax.jacobian(lambda th: eval_spline_deboor_batch(spl, th, ph_test))
-    )(th_test)
-    print(f"\njax.jacobian d(values)/d(theta) {jac.shape}: OK")
-
-    h = jax.jit(
-        jax.hessian(lambda th: eval_spline_deboor(spl, th, ph_test[0]))
-    )(th_test[0])
-    print(f"jax.hessian (scalar→scalar): {float(h):.7f}  OK")
-
-
 # ===========================================================================
 # NumPyro / HMC usage pattern
 # ===========================================================================
