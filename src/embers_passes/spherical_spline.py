@@ -5,8 +5,10 @@ JAX-native bivariate B-spline on the upper hemisphere.
 
 Coordinate convention
 ---------------------
-  theta : colatitude in [0, pi/2]   (0 = north pole, pi/2 = equator)
-  phi   : azimuth   in [0, 2*pi)
+Technically, all this code is coordinate-agnostic. That is, you can use it in
+native spherical coordinates or whatever projection. The paper used orthographic
+coordinates. Working in spherical coordinates can cause discontinuities at the
+pole.
 
 The spline is a tensor-product B-spline of degree (p, q) in (theta, phi).
 All functions are pure JAX — jit-able, vmap-able, and differentiable
@@ -27,9 +29,8 @@ from the Heaviside non-differentiability.  We therefore:
     but used only for index lookup, not in the arithmetic path).
 
 The cleanest approach for NumpPyro use: call ``eval_spline`` for forward
-passes and ``eval_spline_gradient_3d`` for explicit gradients.  If you need
-``jax.grad(eval_spline)`` directly, use the de Boor evaluator variant
-``eval_spline_deboor`` provided below.
+passes.  If you need ``jax.grad(eval_spline)`` directly, use the de Boor 
+evaluator variant ``eval_spline_deboor`` provided below.
 
 Public API
 ----------
@@ -40,8 +41,6 @@ eval_spline                   – f(theta,phi) via basis-vector dot product
 eval_spline_batch             – vmap over (N,) arrays
 eval_spline_deboor            – f via de Boor (smooth jax.grad w.r.t. x)
 eval_spline_deboor_batch      – vmap de Boor version
-eval_spline_gradient_3d       – analytic Cartesian surface gradient
-eval_spline_gradient_batch    – vmap surface gradient
 """
 
 from __future__ import annotations
