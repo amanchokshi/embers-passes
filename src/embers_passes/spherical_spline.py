@@ -488,22 +488,6 @@ def inject_pivot(c_free, pivot_flat_idx, pivot_weight,
     return c_flat.at[pivot_flat_idx].set(c_pivot)
 
 
-# ===========================================================================
-# NumPyro / HMC usage pattern
-# ===========================================================================
-# When the spline coefficients `c` are latent variables, the workflow is:
-#
-#   ONCE (outside any JAX tracing):
-#     knots = make_knots_from_grid(theta_grid, phi_grid, p=3, q=3)
-#
-#   INSIDE the NumPyro model (traced by JAX):
-#     c = numpyro.sample("c", prior)          # shape (n_theta, n_phi)
-#     spl = SphericalSpline(*knots, c, p, q)  # c is a JAX traced array
-#     val = eval_spline_deboor(spl, theta, phi)   # differentiable in c
-#
-# The key insight: knots (t_theta, t_phi) are FIXED numpy arrays converted
-# to JAX constants; only `c` flows through the JAX tracer.
-
 def make_knots_from_grid(
     theta_grid: np.ndarray,
     phi_grid:   np.ndarray,
