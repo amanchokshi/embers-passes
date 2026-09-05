@@ -1,16 +1,29 @@
 """
 spherical_spline.py
 ====================
-JAX-native bivariate B-spline on the upper hemisphere.
+JAX-native bivariate B-spline on R^2.
 
 Coordinate convention
 ---------------------
-Technically, all this code is coordinate-agnostic. That is, you can use it in
-native spherical coordinates or whatever projection. The paper used orthographic
-coordinates. Working in spherical coordinates can cause discontinuities at the
-pole.
+This code is coordinate-agnostic: it is a plain tensor-product B-spline
+over two real coordinates, here called ``u`` and ``v``. It has been used
+both in native spherical coordinates (colatitude/azimuth) and in
+orthographic projection coordinates on the unit disk without modification.
+Nothing in the implementation assumes a spherical domain — any rectangular
+(u, v) parameterization works.
 
-The spline is a tensor-product B-spline of degree (p, q) in (theta, phi).
+Historical naming note: the class is called ``SphericalSpline`` and the
+factory functions ``make_spherical_spline`` / ``make_spherical_spline_raw``
+because this module's original motivating use case was a spline over the
+upper hemisphere. The names stuck (and are used elsewhere in the codebase),
+but what they build is a fully generic bivariate spline — the knot vector
+fields are named ``t_u``/``t_v`` accordingly, not ``t_theta``/``t_phi``.
+
+If you do use spherical coordinates directly, note that working right at
+the pole can introduce a coordinate discontinuity; orthographic or another
+locally well-behaved projection avoids this.
+
+The spline is a tensor-product B-spline of degree (p, q) in (u, v).
 All functions are pure JAX — jit-able, vmap-able, and differentiable
 (grad / jacfwd / hessian), compatible with NumPyro / HMC.
 
@@ -28,21 +41,21 @@ from the Heaviside non-differentiability.  We therefore:
     the knot span with ``jnp.searchsorted`` (non-differentiable w.r.t. x,
     but used only for index lookup, not in the arithmetic path).
 
-The cleanest approach for NumpPyro use: call ``eval_spline`` for forward
-passes.  If you need ``jax.grad(eval_spline)`` directly, use the de Boor 
+The cleanest approach for NumPyro use: call ``eval_spline`` for forward
+passes.  If you need ``jax.grad(eval_spline)`` directly, use the de Boor
 evaluator variant ``eval_spline_deboor`` provided below.
 
 Public API
 ----------
-SphericalSpline               – pytree dataclass
+SphericalSpline               – pytree dataclass (generic bivariate spline)
 make_spherical_spline         – from scipy RectBivariateSpline
 make_spherical_spline_raw     – from numpy arrays directly
-eval_spline                   – f(theta,phi) via basis-vector dot product
+eval_spline                   – f(u,v) via basis-vector dot product
 eval_spline_batch             – vmap over (N,) arrays
 eval_spline_deboor            – f via de Boor (smooth jax.grad w.r.t. x)
 eval_spline_deboor_batch      – vmap de Boor version
 eval_spline_samples           – vmap eval_spline_batch over a leading
-                                 sample axis of coefficients (S, n_theta, n_phi)
+                                 sample axis of coefficients (S, n_u, n_v)
 make_disk_mask                – boolean (n_u, n_v) mask of basis functions
                                  whose support intersects the unit disk
 make_flat_index               – mask -> (flat_to_ij, n_active) index mapping
@@ -52,8 +65,8 @@ make_constraint_info          – precompute pivot index/weights to enforce
                                  f(u0,v0) = f0 as a linear constraint
 inject_pivot                  – insert the deterministic pivot coefficient
                                  into free coefficients given constraint info
-make_knots_from_grid          – knot vectors from a rectangular (theta,phi)
-                                 grid, via scipy's knot-placement heuristic
+make_knots_from_grid          – knot vectors from a rectangular (u,v) grid,
+                                 via scipy's knot-placement heuristic
 make_uniform_knots            – clamped uniform knot vectors, no scipy
                                  dependency
 """
@@ -71,27 +84,32 @@ import numpy as np
 
 @dataclasses.dataclass
 class SphericalSpline:
-    """Tensor-product B-spline on the upper hemisphere.
+    """Tensor-product B-spline over two real coordinates (u, v).
+
+    Named ``SphericalSpline`` for historical reasons (the original use case
+    was a spline over the upper hemisphere), but this is a fully generic
+    bivariate B-spline: u/v can be colatitude/azimuth, orthographic x/y,
+    or any other rectangular parameterization.
 
     Attributes
     ----------
-    t_theta : (m_theta,) knot vector in colatitude
-    t_phi   : (m_phi,)   knot vector in azimuth
-    c       : (n_theta, n_phi) B-spline coefficient matrix
-    p       : degree in theta (Python int, static)
-    q       : degree in phi   (Python int, static)
+    t_u : (m_u,) knot vector in the first coordinate (u)
+    t_v : (m_v,) knot vector in the second coordinate (v)
+    c   : (n_u, n_v) B-spline coefficient matrix
+    p   : degree in u (Python int, static)
+    q   : degree in v (Python int, static)
     """
-    t_theta: jnp.ndarray
-    t_phi:   jnp.ndarray
-    c:       jnp.ndarray
-    p:       int
-    q:       int
+    t_u: jnp.ndarray
+    t_v: jnp.ndarray
+    c:   jnp.ndarray
+    p:   int
+    q:   int
 
 
 # Register as pytree: arrays are leaves, (p,q) are auxiliary (static)
 jax.tree_util.register_pytree_node(
     SphericalSpline,
-    lambda spl: ([spl.t_theta, spl.t_phi, spl.c], (spl.p, spl.q)),
+    lambda spl: ([spl.t_u, spl.t_v, spl.c], (spl.p, spl.q)),
     lambda aux, children: SphericalSpline(*children, *aux),
 )
 
@@ -105,35 +123,35 @@ def make_spherical_spline(rbs, dtype=None) -> SphericalSpline:
 
     Parameters
     ----------
-    rbs   : RectBivariateSpline fitted on a (theta, phi) rectangular grid.
+    rbs   : RectBivariateSpline fitted on a rectangular (u, v) grid.
     dtype : JAX dtype.  Defaults to jnp.float32; use jnp.float64 after
             ``jax.config.update("jax_enable_x64", True)``.
     """
     if dtype is None:
         dtype = jnp.float32
-    tx  = np.array(rbs.tck[0])
-    ty  = np.array(rbs.tck[1])
-    kx  = int(rbs.degrees[0])
-    ky  = int(rbs.degrees[1])
-    nx  = len(tx) - kx - 1
-    ny  = len(ty) - ky - 1
-    c2d = np.array(rbs.tck[2]).reshape(nx, ny)
+    tu  = np.array(rbs.tck[0])
+    tv  = np.array(rbs.tck[1])
+    ku  = int(rbs.degrees[0])
+    kv  = int(rbs.degrees[1])
+    nu  = len(tu) - ku - 1
+    nv  = len(tv) - kv - 1
+    c2d = np.array(rbs.tck[2]).reshape(nu, nv)
     return SphericalSpline(
-        t_theta = jnp.array(tx,  dtype=dtype),
-        t_phi   = jnp.array(ty,  dtype=dtype),
+        t_u = jnp.array(tu,  dtype=dtype),
+        t_v   = jnp.array(tv,  dtype=dtype),
         c       = jnp.array(c2d, dtype=dtype),
-        p=kx, q=ky,
+        p=ku, q=kv,
     )
 
 
-def make_spherical_spline_raw(t_theta, t_phi, c, p=3, q=3, dtype=None) -> SphericalSpline:
+def make_spherical_spline_raw(t_u, t_v, c, p=3, q=3, dtype=None) -> SphericalSpline:
     """Build from numpy arrays (full knot vectors, coefficient matrix, degrees)."""
     if dtype is None:
         dtype = jnp.float32
     return SphericalSpline(
-        t_theta = jnp.array(t_theta, dtype=dtype),
-        t_phi   = jnp.array(t_phi,   dtype=dtype),
-        c       = jnp.array(c,       dtype=dtype),
+        t_u = jnp.array(t_u, dtype=dtype),
+        t_v   = jnp.array(t_v, dtype=dtype),
+        c       = jnp.array(c,   dtype=dtype),
         p=p, q=q,
     )
 
@@ -260,85 +278,85 @@ def _deboor_eval(t: jnp.ndarray, p: int, c_1d: jnp.ndarray, x) -> jnp.ndarray:
     return d[0]
 
 
-def eval_spline_deboor(spl: SphericalSpline, theta, phi) -> jnp.ndarray:
+def eval_spline_deboor(spl: SphericalSpline, u, v) -> jnp.ndarray:
     """Evaluate the spline via the de Boor algorithm (smooth → jax.grad works).
 
     Slightly more expensive than ``eval_spline`` but fully differentiable
-    w.r.t. both theta and phi everywhere in the interior.
+    w.r.t. both u and v everywhere in the interior.
 
     Parameters
     ----------
-    spl   : SphericalSpline
-    theta : colatitude scalar in [0, pi/2]
-    phi   : azimuth scalar in [0, 2*pi)
+    spl : SphericalSpline
+    u   : scalar, first coordinate, within the domain of spl.t_u
+    v   : scalar, second coordinate, within the domain of spl.t_v
     """
-    # Evaluate in phi for each theta basis coefficient row, then in theta
-    n_theta = spl.c.shape[0]
-    n_phi   = spl.c.shape[1]
+    # Evaluate in v for each u basis coefficient row, then in u
+    n_u = spl.c.shape[0]
+    n_v = spl.c.shape[1]
 
-    # 1. For each theta-row i, collapse the phi dimension → phi_vals[i]
-    phi_vals = jax.vmap(
-        lambda c_row: _deboor_eval(spl.t_phi, spl.q, c_row, phi)
-    )(spl.c)  # (n_theta,)
+    # 1. For each u-row i, collapse the v dimension → v_vals[i]
+    v_vals = jax.vmap(
+        lambda c_row: _deboor_eval(spl.t_v, spl.q, c_row, v)
+    )(spl.c)  # (n_u,)
 
-    # 2. Evaluate the resulting 1-D spline in theta
-    return _deboor_eval(spl.t_theta, spl.p, phi_vals, theta)
+    # 2. Evaluate the resulting 1-D spline in u
+    return _deboor_eval(spl.t_u, spl.p, v_vals, u)
 
 
 def eval_spline_deboor_batch(
-    spl: SphericalSpline, theta: jnp.ndarray, phi: jnp.ndarray
+    spl: SphericalSpline, u: jnp.ndarray, v: jnp.ndarray
 ) -> jnp.ndarray:
     """De Boor evaluation at N points → (N,) array."""
-    return jax.vmap(lambda th, ph: eval_spline_deboor(spl, th, ph))(theta, phi)
+    return jax.vmap(lambda uu, vv: eval_spline_deboor(spl, uu, vv))(u, v)
 
 
 # ---------------------------------------------------------------------------
 # Spline evaluation (basis-vector version — fast forward pass)
 # ---------------------------------------------------------------------------
 
-def eval_spline(spl: SphericalSpline, theta, phi) -> jnp.ndarray:
-    """Evaluate f(theta, phi) using only the (p+1)×(q+1) active coefficients.
+def eval_spline(spl: SphericalSpline, u, v) -> jnp.ndarray:
+    """Evaluate f(u, v) using only the (p+1)×(q+1) active coefficients.
 
-    At any point only p+1 basis functions in theta and q+1 in phi are nonzero,
+    At any point only p+1 basis functions in u and q+1 in v are nonzero,
     so the bilinear form reduces to a dot product over a (p+1)×(q+1) subblock
     of c extracted with dynamic_slice.
 
-    Use for forward passes.  For jax.grad w.r.t. (theta, phi), use
-    ``eval_spline_deboor`` or call ``eval_spline_gradient_3d`` directly.
+    Use for forward passes.  For jax.grad w.r.t. (u, v), use
+    ``eval_spline_deboor``.
     """
-    b_t, i_t = _bspline_basis_active(spl.t_theta, spl.p, theta)  # (p+1,), scalar
-    b_p, i_p = _bspline_basis_active(spl.t_phi,   spl.q, phi)    # (q+1,), scalar
+    b_u, i_u = _bspline_basis_active(spl.t_u, spl.p, u)  # (p+1,), scalar
+    b_v, i_v = _bspline_basis_active(spl.t_v,   spl.q, v)  # (q+1,), scalar
 
     # Extract the (p+1)×(q+1) active subblock of c.
     # Slice start: i*-p is the first nonzero basis function index.
     c_sub = jax.lax.dynamic_slice(spl.c,
-                                  (i_t - spl.p, i_p - spl.q),
+                                  (i_u - spl.p, i_v - spl.q),
                                   (spl.p + 1,   spl.q + 1))
-    return jnp.dot(b_t, c_sub @ b_p)
+    return jnp.dot(b_u, c_sub @ b_v)
 
 
 def eval_spline_batch(
-    spl: SphericalSpline, theta: jnp.ndarray, phi: jnp.ndarray
+    spl: SphericalSpline, u: jnp.ndarray, v: jnp.ndarray
 ) -> jnp.ndarray:
     """Evaluate at N points → (N,) array."""
-    return jax.vmap(lambda th, ph: eval_spline(spl, th, ph))(theta, phi)
+    return jax.vmap(lambda uu, vv: eval_spline(spl, uu, vv))(u, v)
 
 def eval_spline_samples(
-    spl:    SphericalSpline,   # c has shape (S, n_theta, n_phi)
-    theta:  jnp.ndarray,       # scalar or (N,)
-    phi:    jnp.ndarray,       # scalar or (N,)
-) -> jnp.ndarray:              # (S,) or (S, N)
+    spl: SphericalSpline,   # c has shape (S, n_u, n_v)
+    u:   jnp.ndarray,       # scalar or (N,)
+    v:   jnp.ndarray,       # scalar or (N,)
+) -> jnp.ndarray:           # (S,) or (S, N)
     """Evaluate over S posterior samples of c.
 
-    vmap is over the leading sample axis of spl.c; theta/phi are treated
+    vmap is over the leading sample axis of spl.c; u/v are treated
     as fixed (in_axes=None broadcasts them across samples).
     """
     return jax.vmap(
         lambda c: eval_spline_batch(
-            SphericalSpline(spl.t_theta, spl.t_phi, c, spl.p, spl.q),
-            theta, phi,
+            SphericalSpline(spl.t_u, spl.t_v, c, spl.p, spl.q),
+            u, v,
         )
-    )(spl.c)  # vmap sees spl.c as (S, n_theta, n_phi) and maps over axis 0
+    )(spl.c)  # vmap sees spl.c as (S, n_u, n_v) and maps over axis 0
 
 def make_disk_mask(t_u, t_v, p, q):
     """Boolean mask of shape (n_u, n_v): True where B_i(u)*B_j(v) has
@@ -503,10 +521,10 @@ def inject_pivot(c_free, pivot_flat_idx, pivot_weight,
 
 
 def make_knots_from_grid(
-    theta_grid: np.ndarray,
-    phi_grid:   np.ndarray,
-    p:          int = 3,
-    q:          int = 3,
+    u_grid: np.ndarray,
+    v_grid: np.ndarray,
+    p:      int = 3,
+    q:      int = 3,
     dtype=None,
 ):
     """Pre-compute B-spline knot vectors from a rectangular grid.
@@ -521,29 +539,29 @@ def make_knots_from_grid(
 
     Parameters
     ----------
-    theta_grid : (n_theta,) 1-D grid of colatitude values
-    phi_grid   : (n_phi,)   1-D grid of azimuth values
-    p, q       : B-spline degrees (default 3 = cubic)
-    dtype      : JAX dtype for the returned arrays (default jnp.float32;
-                 use jnp.float64 after enabling x64)
+    u_grid : (n_u,) 1-D grid of first-coordinate values
+    v_grid : (n_v,) 1-D grid of second-coordinate values
+    p, q   : B-spline degrees (default 3 = cubic)
+    dtype  : JAX dtype for the returned arrays (default jnp.float32;
+             use jnp.float64 after enabling x64)
 
     Returns
     -------
-    t_theta : jnp.ndarray, shape (n_theta + p + 1,)  – knot vector in theta
-    t_phi   : jnp.ndarray, shape (n_phi   + q + 1,)  – knot vector in phi
-    p       : int
-    q       : int
-    n_theta : int  – number of basis functions / coefficients in theta
-    n_phi   : int  – number of basis functions / coefficients in phi
+    t_u : jnp.ndarray, shape (n_u + p + 1,)  – knot vector in u
+    t_v : jnp.ndarray, shape (n_v + q + 1,)  – knot vector in v
+    p   : int
+    q   : int
+    n_u : int  – number of basis functions / coefficients in u
+    n_v : int  – number of basis functions / coefficients in v
 
     Example
     -------
-    >>> t_theta, t_phi, p, q, n_th, n_ph = make_knots_from_grid(
-    ...     theta_grid, phi_grid, p=3, q=3, dtype=jnp.float64)
+    >>> t_u, t_v, p, q, n_u, n_v = make_knots_from_grid(
+    ...     u_grid, v_grid, p=3, q=3, dtype=jnp.float64)
     >>> # Inside NumPyro model:
-    >>> c   = numpyro.sample("c", dist.Normal(0, 1).expand([n_th, n_ph]))
-    >>> spl = SphericalSpline(t_theta, t_phi, c, p, q)
-    >>> val = eval_spline_deboor(spl, theta_obs, phi_obs)
+    >>> c   = numpyro.sample("c", dist.Normal(0, 1).expand([n_u, n_v]))
+    >>> spl = SphericalSpline(t_u, t_v, c, p, q)
+    >>> val = eval_spline_deboor(spl, u_obs, v_obs)
     """
     from scipy.interpolate import RectBivariateSpline
 
@@ -551,43 +569,43 @@ def make_knots_from_grid(
         dtype = jnp.float32
 
     # Fit a dummy spline just to get scipy's knot placement
-    dummy_z = np.zeros((len(theta_grid), len(phi_grid)))
-    rbs     = RectBivariateSpline(theta_grid, phi_grid, dummy_z, kx=p, ky=q)
+    dummy_z = np.zeros((len(u_grid), len(v_grid)))
+    rbs     = RectBivariateSpline(u_grid, v_grid, dummy_z, kx=p, ky=q)
 
-    t_theta_np = np.array(rbs.tck[0])
-    t_phi_np   = np.array(rbs.tck[1])
-    n_theta    = len(t_theta_np) - p - 1
-    n_phi      = len(t_phi_np)   - q - 1
+    t_u_np = np.array(rbs.tck[0])
+    t_v_np = np.array(rbs.tck[1])
+    n_u    = len(t_u_np) - p - 1
+    n_v    = len(t_v_np) - q - 1
 
-    t_theta = jnp.array(t_theta_np, dtype=dtype)
-    t_phi   = jnp.array(t_phi_np,   dtype=dtype)
+    t_u = jnp.array(t_u_np, dtype=dtype)
+    t_v = jnp.array(t_v_np, dtype=dtype)
 
-    return t_theta, t_phi, p, q, n_theta, n_phi
+    return t_u, t_v, p, q, n_u, n_v
 
 
 def make_uniform_knots(
-    theta_min: float,
-    theta_max: float,
-    phi_min:   float,
-    phi_max:   float,
-    n_theta:   int,
-    n_phi:     int,
-    p:         int = 3,
-    q:         int = 3,
+    u_min: float,
+    u_max: float,
+    v_min: float,
+    v_max: float,
+    n_u:   int,
+    n_v:   int,
+    p:     int = 3,
+    q:     int = 3,
     dtype=None,
 ):
     """Build clamped uniform knot vectors (no scipy dependency).
 
     Produces knot vectors with ``p+1`` repeated boundary knots (clamped
-    B-spline) and ``n_theta - p - 1`` interior knots uniformly spaced.
+    B-spline) and ``n_u - p - 1`` interior knots uniformly spaced.
 
     Parameters
     ----------
-    theta_min/max : domain bounds in colatitude
-    phi_min/max   : domain bounds in azimuth
-    n_theta       : number of basis functions in theta
-    n_phi         : number of basis functions in phi
-    p, q          : degrees
+    u_min/max : domain bounds in the first coordinate
+    v_min/max : domain bounds in the second coordinate
+    n_u       : number of basis functions in u
+    n_v       : number of basis functions in v
+    p, q      : degrees
 
     Returns
     -------
@@ -605,10 +623,10 @@ def make_uniform_knots(
             np.repeat(b, deg + 1),
         ])
 
-    t_theta_np = clamped_knots(theta_min, theta_max, n_theta, p)
-    t_phi_np   = clamped_knots(phi_min,   phi_max,   n_phi,   q)
+    t_u_np = clamped_knots(u_min, u_max, n_u, p)
+    t_v_np = clamped_knots(v_min, v_max, n_v, q)
 
-    t_theta = jnp.array(t_theta_np, dtype=dtype)
-    t_phi   = jnp.array(t_phi_np,   dtype=dtype)
+    t_u = jnp.array(t_u_np, dtype=dtype)
+    t_v = jnp.array(t_v_np, dtype=dtype)
 
-    return t_theta, t_phi, p, q, n_theta, n_phi
+    return t_u, t_v, p, q, n_u, n_v
