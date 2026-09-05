@@ -41,6 +41,21 @@ eval_spline                   – f(theta,phi) via basis-vector dot product
 eval_spline_batch             – vmap over (N,) arrays
 eval_spline_deboor            – f via de Boor (smooth jax.grad w.r.t. x)
 eval_spline_deboor_batch      – vmap de Boor version
+eval_spline_samples           – vmap eval_spline_batch over a leading
+                                 sample axis of coefficients (S, n_theta, n_phi)
+make_disk_mask                – boolean (n_u, n_v) mask of basis functions
+                                 whose support intersects the unit disk
+make_flat_index               – mask -> (flat_to_ij, n_active) index mapping
+scatter_coeffs                – scatter n_active sampled coeffs into full
+                                 (n_u, n_v) grid using a disk mask
+make_constraint_info          – precompute pivot index/weights to enforce
+                                 f(u0,v0) = f0 as a linear constraint
+inject_pivot                  – insert the deterministic pivot coefficient
+                                 into free coefficients given constraint info
+make_knots_from_grid          – knot vectors from a rectangular (theta,phi)
+                                 grid, via scipy's knot-placement heuristic
+make_uniform_knots            – clamped uniform knot vectors, no scipy
+                                 dependency
 """
 
 from __future__ import annotations
