@@ -123,3 +123,9 @@ The internal layout is:
 ## Reproducing the dataset
 
 - [`embers_extract/README.md`](embers_extract/README.md)
+
+## Reproducing Wilensky + Chokshi 2026
+
+- For spline model: run scripts/sparse_beam_fit.py as 
+`python sparse_beam_fit.py example_config.yaml` after modifying first three 
+entries of example_config.yaml according to system. Will reproduce tile S06XX.
