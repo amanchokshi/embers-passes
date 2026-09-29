@@ -19,29 +19,24 @@ def load_config(config_path: str) -> argparse.Namespace:
         "mwa_beamfile": None,   # required
         "outdir": None,         # required
         "pol": "XX",
-        "tile": "08",
+        "tile": "06",
         "rf_num": 0,
-        "plotting": False,
         "num_pass": None,
         "ndevice": 4,
         "key": 338422580,
-        "num_warmup": 1000,
-        "num_sample": 2000,
-        "mix_model": False,
+        "num_warmup": 2000,
+        "num_sample": 4000,
         "jackknife": False,
         "jackknife_mode": "time",
         "jackknife_chunk": 0,
         "jackknife_key": 224007541,
-        "ortho_knots": False,
+        "ortho_knots": True,
         "svi": False,
         "enforce_boresight": False,
-        "ds_factor": 1,
-        "inference": True,
-        "postprocess": False,
-        "pass_plot_seed": 321906282,
         "chunk_sec": 1728000, # 20 days,
         "dense_mass": False,
-        "svi_key": 276346727
+        "svi_key": 276346727,
+        "learning_rate": 0.1
     }
 
     with open(config_path, "r") as f:
@@ -81,6 +76,7 @@ def write_configs(
         pols:        list of polarisations e.g. ["XX", "YY"]
         outdir:      directory to write config files into
         jackknives:  list of jackknives to do ("time" or "random").
+        Nchunk:      Number of chunks to break things into (for time jackknifing only)
     """
     
     JAX_KEY_MAX = 2**32 - 1

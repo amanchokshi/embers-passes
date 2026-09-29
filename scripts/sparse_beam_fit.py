@@ -508,49 +508,8 @@ if __name__ == "__main__":
             grad = jnp.gradient(surf_vals_model.reshape(n_th, n_ph))
         return spl,grad
             
-    def mixture_model(za_data, az_data, Ndat, data=None):
-        scale_vals = numpyro.sample("scale_vals", dist.Uniform(low=1e-2, high=1e2))
-        skewlog_scale_vals = numpyro.sample("skewlog_scale_vals", dist.Uniform(low=1e-2, high=1e2))
-        skewlog_shape_vals = numpyro.sample("skewlog_shape_vals", dist.Uniform(low=1e-2, high=1e2))
-        scale_grad = numpyro.sample("scale_grad", dist.Uniform(low=1e-2, high=1e2))
-        scale_noise = numpyro.sample("scale_noise", dist.Uniform(low=1e-2, high=1e2))
-        mix_weight = numpyro.sample("mix_weight", dist.Beta(11, 1))
-        with numpyro.plate("Nparam", Nparam):
-            surf_vals = numpyro.sample("surf_vals",
-                                    dist.MixtureGeneral(
-                                        dist.Categorical(
-                                            jnp.array([
-                                                mix_weight,
-                                                1 - mix_weight
-                                            ])
-                                        ), 
-                                        [
-                                            dist.SoftLaplace(
-                                            loc=0, scale=scale_vals
-                                        ), 
-                                            SkewLogistic(
-                                                loc=0,
-                                                scale=skewlog_scale_vals,
-                                                shape=skewlog_shape_vals
-                                        )
-                                        ]
-                                        )
-                                    )
-        spl = SphericalSpline(t_theta, t_phi, surf_vals.reshape(n_th, n_ph), p, q)
-        model_vals = eval_spline_batch(spl, za_data, az_data)
-        grad = jnp.gradient(surf_vals.reshape(n_th, n_ph))
-        pot1 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[0]).sum()
-        pot2 = dist.SoftLaplace(loc=0, scale=scale_grad).log_prob(grad[1]).sum()
-
-        numpyro.factor("grad_pot", pot1 + pot2)
-        
-        
-        with numpyro.plate("Ndat", Ndat):
-            obs = numpyro.sample("obs",
-                                dist.SoftLaplace(loc=model_vals, scale=scale_noise),
-                                obs=data)
-            
-    model = mixture_model if args.mix_model else vanilla_model
+    # Aliasing this for backwards compatibility
+    model = vanilla_model
 
     model_args = (
         dat_coord_1, 
@@ -564,71 +523,56 @@ if __name__ == "__main__":
         "enforce_boresight": args.enforce_boresight
     }
 
-    # dat_for_inference = mean_res.real
-    # count_gt_0 = count_res > 0
-    # dat_for_inference = mean_res.real[count_gt_0]
-    # model_args = (
-    #     X[count_gt_0],
-    #     Y[count_gt_0],
-    #     len(dat_for_inference),
-    #     1/np.sqrt(count_res)[count_gt_0]
-    # )
-    # model_kwargs = {
-    #     "data": dat_for_inference,
-    #     "ortho_knots": args.ortho_knots,
-    #     "enforce_boresight": args.enforce_boresight
-    # }
-    if args.inference: # Need to do inference
-        key = random.key(args.key)
-        if args.svi:
-            #guide = AutoDelta(model)
-            """
-            Train an AutoLaplace guide to extract the correlation structure
-            of the spline coefficients. Use this in a multivariate normal guide
-            to debias the posterior of the scale parameters. 
-            """
-            guide = AutoLaplaceApproximation(model)
-            svi = SVI(model, guide, numpyro.optim.Adam(args.learning_rate), loss=Trace_ELBO())
-            svi_result = svi.run(
-                random.key(args.svi_key), 
-                args.num_warmup, 
-                *model_args, 
-                **model_kwargs
-            )
-            params = svi_result.params
-            plt.plot(svi_result.losses)
-            plt.ylabel("Loss")
-            plt.xlabel("Iteration")
-            plt.savefig(f"{outdir}/losses.pdf")
+    key = random.key(args.key)
+    if args.svi:
 
-            svi_samps = guide.sample_posterior(
-                key, 
-                params,
-                *model_args,
-                sample_shape=(args.num_sample,),
-                **model_kwargs,
-            )
+        """
+        Train an AutoLaplace guide to extract the correlation structure
+        of the spline coefficients. Use this in a multivariate normal guide
+        to debias the posterior of the scale parameters. 
+        """
+        guide = AutoLaplaceApproximation(model)
+        svi = SVI(model, guide, numpyro.optim.Adam(args.learning_rate), loss=Trace_ELBO())
+        svi_result = svi.run(
+            random.key(args.svi_key), 
+            args.num_warmup, 
+            *model_args, 
+            **model_kwargs
+        )
+        params = svi_result.params
+        plt.plot(svi_result.losses)
+        plt.ylabel("Loss")
+        plt.xlabel("Iteration")
+        plt.savefig(f"{outdir}/losses.pdf")
 
-            with open(f"{outdir}/svi_laplace_params.pkl", "wb") as svi_params_file:
-                pickle.dump(params, svi_params_file)
-            with open(f"{outdir}/svi_laplace_samps.pkl", "wb") as svi_samps_file:
-                pickle.dump(svi_samps, svi_samps_file)
+        svi_samps = guide.sample_posterior(
+            key, 
+            params,
+            *model_args,
+            sample_shape=(args.num_sample,),
+            **model_kwargs,
+        )
 
-        else:
-            kernel = NUTS(model, dense_mass=args.dense_mass)
-            mcmc = MCMC(
-                kernel, 
-                num_warmup=args.num_warmup, 
-                num_samples=args.num_sample, 
-                num_chains=args.ndevice
-            )
-            mcmc.run(
-                key, 
-                *model_args, 
-                **model_kwargs
-            )
-            idata = az.from_numpyro(mcmc)
-            idata.to_netcdf(f"{outdir}/mcmc_out.nc")
+        with open(f"{outdir}/svi_laplace_params.pkl", "wb") as svi_params_file:
+            pickle.dump(params, svi_params_file)
+        with open(f"{outdir}/svi_laplace_samps.pkl", "wb") as svi_samps_file:
+            pickle.dump(svi_samps, svi_samps_file)
 
-            run_diagnostics(idata)
+    else:
+        kernel = NUTS(model, dense_mass=args.dense_mass)
+        mcmc = MCMC(
+            kernel, 
+            num_warmup=args.num_warmup, 
+            num_samples=args.num_sample, 
+            num_chains=args.ndevice
+        )
+        mcmc.run(
+            key, 
+            *model_args, 
+            **model_kwargs
+        )
+        idata = az.from_numpyro(mcmc)
+        idata.to_netcdf(f"{outdir}/mcmc_out.nc")
+
+        run_diagnostics(idata)
     
