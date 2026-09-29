@@ -129,3 +129,6 @@ The internal layout is:
 - For spline model: run scripts/sparse_beam_fit.py as 
 `python sparse_beam_fit.py example_config.yaml` after modifying first three 
 entries of example_config.yaml according to system. Will reproduce tile S06XX.
+Results can be analyzed with `notebooks/sparse_beam_check.ipynb`. There is a 
+similar notebook, `notebooks/sparse_chunk_fit_comparison.ipynb` that can be
+used to compare jackknife chunks; each chunk must be run separately.
